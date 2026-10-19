@@ -31,6 +31,7 @@ Audit and setup
   aws-cli-zsp audit [--limit N] [--verify]     the hash-chained audit trail
   aws-cli-zsp migrate                          move keys stored by 0.1.x into the Secure Enclave vault
   aws-cli-zsp check-touch-id                   show a Touch ID prompt and nothing else
+  aws-cli-zsp ui                               open the panel in a window (when the menu bar icon is hidden)
   aws-cli-zsp install                          watcher, menu bar app at login, ~/.local/bin/aws-cli-zsp, first import
   aws-cli-zsp uninstall [--restore-plaintext]  remove the agents; optionally put the keys back in the file
 
@@ -375,6 +376,19 @@ func cmdCheckTouchID() throws {
     done(["ok": true], "Touch ID works")
 }
 
+func cmdUI() throws {
+    let bin = selfPath()
+    guard let range = bin.range(of: ".app/Contents/Helpers/") else {
+        fail("not inside the app bundle (bash scripts/build-app.sh installs it): \(bin)")
+    }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    p.arguments = [String(bin[..<range.lowerBound]) + ".app"]
+    try p.run()
+    p.waitUntilExit()
+    if p.terminationStatus != 0 { fail("open failed (\(p.terminationStatus))") }
+}
+
 // MARK: Install
 
 let watchLabel = "consulting.cloudscale.zsp.watch"
@@ -444,7 +458,7 @@ func cmdInstall() throws {
     ])
     var menuLoaded = false
     if FileManager.default.isExecutableFile(atPath: menuBin) {
-        try load(menuLabel, ["Label": menuLabel, "ProgramArguments": [menuBin], "RunAtLoad": true,
+        try load(menuLabel, ["Label": menuLabel, "ProgramArguments": [menuBin, "--background"], "RunAtLoad": true,
                              "LimitLoadToSessionType": "Aqua", "ProcessType": "Interactive", "EnvironmentVariables": env])
         menuLoaded = true
     }
@@ -502,6 +516,7 @@ run {
     case "install": try cmdInstall()
     case "migrate": try cmdMigrate()
     case "check-touch-id": try cmdCheckTouchID()
+    case "ui", "open": try cmdUI()
     case "uninstall": try cmdUninstall()
     case "version", "--version": print(version)
     case "", "help", "--help", "-h": print(usage)

@@ -55,7 +55,7 @@ echo "== installed: $DEST"
 if [[ "${1:-}" == "--install" ]]; then
     "$DEST/Contents/Helpers/aws-cli-zsp.app/Contents/MacOS/aws-cli-zsp" install
 elif [[ $WAS_RUNNING == 1 ]]; then
-    open -g "$DEST"
+    open -g "$DEST" --args --background
     echo "== relaunched the menu bar app"
 else
     echo "== next: $DEST/Contents/Helpers/aws-cli-zsp.app/Contents/MacOS/aws-cli-zsp install   (moves your keys; see README)"
