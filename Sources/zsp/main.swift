@@ -228,7 +228,7 @@ func cmdList() {
 func cmdCredentialProcess() {
     let profile = requireProfile()
     do {
-        let c = try makeVault().credentials(for: profile, requester: Requester.describe())
+        let c = try makeVault().credentials(for: profile, requester: Requester.describe(), asker: Requester.summary())
         var out: [String: Any] = ["Version": 1, "AccessKeyId": c.accessKeyId, "SecretAccessKey": c.secretAccessKey]
         if let t = c.sessionToken { out["SessionToken"] = t }
         if let e = c.expiration { out["Expiration"] = iso8601(e) }
@@ -244,7 +244,7 @@ func cmdCredentialProcess() {
 func cmdExec() throws {
     let profile = requireProfile()
     guard !opts.rest.isEmpty else { fail("nothing to run: aws-cli-zsp exec --profile \(profile) -- aws s3 ls") }
-    let c = try makeVault().credentials(for: profile, requester: Requester.describe(pid: getpid()))
+    let c = try makeVault().credentials(for: profile, requester: Requester.describe(pid: getpid()), asker: Requester.summary(pid: getpid()))
     setenv("AWS_ACCESS_KEY_ID", c.accessKeyId, 1)
     setenv("AWS_SECRET_ACCESS_KEY", c.secretAccessKey, 1)
     if let t = c.sessionToken { setenv("AWS_SESSION_TOKEN", t, 1) } else { unsetenv("AWS_SESSION_TOKEN") }
@@ -350,25 +350,38 @@ func cmdMigrate() throws {
     let vault = makeVault()
     var moved: [String] = []
     var failed: [String: String] = [:]
+    var leftovers: [String] = []
     for p in try legacy.accounts(.master) {
         do {
-            guard let data = try legacy.read(.master, p) else { continue }
-            try vault.storeMaster(raw: data, profile: p)
-            try legacy.delete(.master, p)
-            moved.append(p)
+            // Already sealed by an earlier run whose clean-up was not allowed: only the old
+            // copy is left to remove, so there is nothing to read (and no dialog for it).
+            if !vault.hasMaster(p) {
+                guard let data = try legacy.read(.master, p) else { continue }
+                try vault.storeMaster(raw: data, profile: p)
+                moved.append(p)
+            }
         } catch {
             failed[p] = error.localizedDescription
+            continue
         }
+        // Deleting needs its own Allow. The key is already safe in the vault, so a refusal
+        // leaves an encrypted Keychain copy behind, not a failure.
+        if (try? legacy.delete(.master, p)) == nil { leftovers.append(p) }
     }
     for p in (try? legacy.accounts(.session)) ?? [] { try? legacy.delete(.session, p) }
     try? legacy.delete(.auditHead, "head")
     if !moved.isEmpty || !failed.isEmpty {
-        try vault.audit.append("keys.migrated", ok: failed.isEmpty, detail: ["moved": moved.joined(separator: ","), "failed": failed.keys.sorted().joined(separator: ",")])
+        try vault.audit.append("keys.migrated", ok: failed.isEmpty, detail: ["moved": moved.joined(separator: ","), "failed": failed.keys.sorted().joined(separator: ","),
+                                                                      "oldCopyLeft": leftovers.joined(separator: ",")])
     }
-    struct Result: Encodable { let moved: [String]; let failed: [String: String] }
+    struct Result: Encodable { let moved: [String]; let failed: [String: String]; let oldCopyLeft: [String] }
     var lines = moved.map { "moved \($0) into the Secure Enclave vault" }
+    if !leftovers.isEmpty {
+        lines.append("in the vault, old Keychain copy not removed: \(leftovers.joined(separator: ", ")). These are encrypted, not plaintext; "
+            + "run migrate again and click Allow, or delete the \"\(legacy.prefix).master\" items in Keychain Access")
+    }
     lines += failed.sorted { $0.key < $1.key }.map { "NOT moved \($0.key): \($0.value) (run migrate again and click Allow)" }
-    done(Result(moved: moved, failed: failed), lines.isEmpty ? "nothing to migrate" : lines.joined(separator: "\n"))
+    done(Result(moved: moved, failed: failed, oldCopyLeft: leftovers), lines.isEmpty ? "nothing to migrate" : lines.joined(separator: "\n"))
 }
 
 func cmdCheckTouchID() throws {

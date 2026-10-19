@@ -6,6 +6,8 @@
 	<string>AWS CLI: ZSP</string>
 	<key>CFBundleExecutable</key>
 	<string>ZSPMenu</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>consulting.cloudscale.awsclizsp</string>
 	<key>CFBundleName</key>

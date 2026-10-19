@@ -186,6 +186,10 @@ public final class Vault {
     }
 
     /// Stores a key exactly as an older store held it (the migration from 0.1.x).
+    public func hasMaster(_ profile: String) -> Bool {
+        (try? store.accounts(.master).contains(profile)) ?? false
+    }
+
     public func storeMaster(raw: Data, profile: String) throws {
         _ = try ZSPJSON.decoder.decode(MasterKey.self, from: raw)
         try store.write(.master, profile, raw)
@@ -209,7 +213,9 @@ public final class Vault {
     /// What credential_process returns. A cached session is served without a prompt while it
     /// has five minutes left; otherwise Touch ID unlocks the long-lived key for one
     /// GetSessionToken call and the key goes straight back out of memory.
-    public func credentials(for profile: String, requester: String) throws -> AWSCredentials {
+    /// `asker` is the short "who wants it" for the Touch ID dialog; `requester` is the full chain
+    /// the audit log keeps.
+    public func credentials(for profile: String, requester: String, asker: String? = nil) throws -> AWSCredentials {
         try paths.ensureSupportDir()
         return try withFileLock(paths.lock("session-\(profile)")) {
             let t = now()
@@ -220,13 +226,14 @@ public final class Vault {
                 try? meta.update(profile) { $0?.lastUsedAt = t; $0?.lastRequester = requester; $0?.sessionExpiresAt = exp }
                 return s
             }
-            let master = try unlock(profile, reason: "issue AWS credentials for profile “\(profile)” to \(requester)", requester: requester)
+            let seconds = Settings.load(paths).duration(for: profile)
+            let reason = "unlock your “\(profile)” AWS key for a \(durationText(seconds)) session, for \(asker ?? requester)"
+            let master = try unlock(profile, reason: reason, requester: requester)
             if master.sessionToken != nil {
                 try audit.append("session.served", profile: profile, detail: ["temporary": "true"], requester: requester)
                 try? meta.update(profile) { $0?.lastUsedAt = t; $0?.lastRequester = requester }
                 return master.credentials
             }
-            let seconds = Settings.load(paths).duration(for: profile)
             let session: AWSCredentials
             do {
                 session = try aws.getSessionToken(master.credentials, durationSeconds: seconds)
@@ -496,4 +503,10 @@ public final class Vault {
         }
         return profiles
     }
+}
+
+/// 3600 is "1-hour", 900 is "15-minute", 5400 is "90-minute": the form a dialog reads naturally.
+func durationText(_ seconds: Int) -> String {
+    if seconds % 3600 == 0 { return "\(seconds / 3600)-hour" }
+    return "\(seconds / 60)-minute"
 }

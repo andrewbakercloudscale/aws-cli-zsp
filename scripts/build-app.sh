@@ -32,6 +32,10 @@ HELPER="$APP/Contents/Helpers/aws-cli-zsp.app"
 mkdir -p "$HELPER/Contents/MacOS"
 cp "$BIN_DIR/zsp" "$HELPER/Contents/MacOS/aws-cli-zsp"
 cp Resources/Helper-Info.plist "$HELPER/Contents/Info.plist"
+# The icon Touch ID and Keychain dialogs badge themselves with (scripts/make-icon.swift draws it).
+mkdir -p "$HELPER/Contents/Resources"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp Resources/AppIcon.icns "$HELPER/Contents/Resources/AppIcon.icns"
 
 source "$(dirname "$0")/sign-id.sh"
 echo "== sign: $ZSP_SIGN_ID"

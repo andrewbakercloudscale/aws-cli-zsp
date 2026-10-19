@@ -36,6 +36,13 @@ final class AuditTests: XCTestCase {
         XCTAssertNil(AuditLog(paths: s.paths, anchor: nil).verify().anchored, "a reader without the Keychain cannot check the anchor")
     }
 
+    func testShortCommandForDialogs() {
+        XCTAssertEqual(Requester.shortCommand(["/opt/homebrew/bin/aws", "sts", "get-caller-identity", "--profile", "default"]),
+                       "aws sts get-caller-identity")
+        XCTAssertEqual(Requester.shortCommand(["python3.13", "/opt/homebrew/bin/aws", "s3", "cp", "/tmp/a.zip", "s3://b/"]), "aws s3 cp")
+        XCTAssertEqual(Requester.shortCommand([]), "an unknown program")
+    }
+
     func testRequesterRedactsSecrets() {
         XCTAssertEqual(Requester.redact(["aws", "configure", "set", "aws_secret_access_key", "abc"]),
                        ["aws", "configure", "set", "aws_secret_access_key", "[redacted]"])

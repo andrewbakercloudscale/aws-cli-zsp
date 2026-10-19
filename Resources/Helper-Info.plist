@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- The aws-cli-zsp command. A bundle of its own only so that Touch ID and Keychain
-	     dialogs say "AWS CLI: ZSP" instead of the bare executable name. -->
 	<key>CFBundleDisplayName</key>
 	<string>AWS CLI: ZSP</string>
 	<key>CFBundleExecutable</key>
 	<string>aws-cli-zsp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>consulting.cloudscale.zsp</string>
 	<key>CFBundleName</key>
@@ -18,9 +18,9 @@
 	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
 	<string>2</string>
-	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
 	<key>LSBackgroundOnly</key>
 	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
 </dict>
 </plist>

@@ -16,6 +16,55 @@ public enum Requester {
         return parts.isEmpty ? "unknown" : parts.joined(separator: " ← ")
     }
 
+    /// The short form for a Touch ID dialog: "aws sts get-caller-identity, from Claude Code".
+    /// The full chain, with arguments and pids, stays in the audit log.
+    public static func summary(pid: pid_t = getppid()) -> String {
+        let command = shortCommand(redact(arguments(pid)))
+        var current = parentPid(pid)
+        for _ in 0..<8 {
+            guard let p = current, p > 1 else { break }
+            if let origin = origin(p) { return "\(command), from \(origin)" }
+            current = parentPid(p)
+        }
+        return command
+    }
+
+    static let shells: Set<String> = ["zsh", "bash", "sh", "fish", "dash", "login", "env", "sudo", "tmux", "screen", "node"]
+
+    /// The program name and its leading subcommands: `aws s3 cp /a s3://b` is `aws s3 cp`.
+    static func shortCommand(_ argv: [String]) -> String {
+        var args = argv
+        if args.count > 1, let first = args.first, (first as NSString).lastPathComponent.lowercased().hasPrefix("python") {
+            args.removeFirst()
+        }
+        guard let first = args.first else { return "an unknown program" }
+        var words = [(first as NSString).lastPathComponent]
+        for a in args.dropFirst() {
+            if a.hasPrefix("-") || a.contains("/") || a.contains("=") || words.count == 3 { break }
+            words.append(a)
+        }
+        return words.joined(separator: " ")
+    }
+
+    /// What a person would recognise as the source: an app ("Terminal"), Claude Code, or the
+    /// script a shell is running ("backup-s3.sh"). Plain interactive shells are skipped.
+    static func origin(_ pid: pid_t) -> String? {
+        if let path = executablePath(pid), let r = path.range(of: ".app/Contents/MacOS/") {
+            let app = (String(path[..<r.lowerBound]) as NSString).lastPathComponent
+            return app == "Electron" ? nil : app
+        }
+        let argv = arguments(pid)
+        guard let first = argv.first else { return nil }
+        let name = (first as NSString).lastPathComponent.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if name == "claude" || argv.contains(where: { $0.hasSuffix("/claude") || $0.contains("claude-code") }) { return "Claude Code" }
+        if shells.contains(name) {
+            // `bash backup-s3.sh` is the script; `zsh -c …` and a login shell are not.
+            if argv.count > 1, !argv[1].hasPrefix("-") { return (argv[1] as NSString).lastPathComponent }
+            return nil
+        }
+        return name
+    }
+
     static func commandLine(_ pid: pid_t) -> String {
         var args = redact(arguments(pid))
         // `python3 /opt/homebrew/bin/aws s3 ls` reads better as `aws s3 ls`.
