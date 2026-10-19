@@ -83,6 +83,97 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
   an outward change in your AWS accounts.
 - **GitHub**: `gh repo create andrewbakercloudscale/aws-cli-zsp --private --source . --push`.
 
+## Next: no long-lived keys (IAM Roles Anywhere, CA on the Pi)
+
+Status: design, not started. Chosen over a Pi credential broker (the Pi holding every key)
+and over hashing or Developer ID tweaks, because it removes the long-lived key instead of
+guarding it better.
+
+### Goal
+
+No IAM access key exists anywhere: not on the Mac, not on the Pi, not in AWS. A session
+comes from IAM Roles Anywhere, which accepts an X.509 certificate for a Secure Enclave key
+on this Mac. Touch ID still approves every new session, as today.
+
+### Pieces
+
+| Piece | Where | What it does |
+|---|---|---|
+| Root CA | Offline (created once, kept off the Pi, e.g. encrypted on a USB stick) | The trust anchor in AWS. Only used to sign the Pi's intermediate |
+| Intermediate CA | Pi, in its own container, reachable only through the Cloudflare tunnel; not the WordPress container | Signs short-lived device certificates. Revocable without touching the root |
+| Device key | Mac, Secure Enclave, P-256, Touch ID required | Signs Roles Anywhere `CreateSession`. Never leaves the chip |
+| Remote key | Mac, Secure Enclave, P-256, no Touch ID | For approval while away (below). Useless without a fresh certificate |
+| Hub account | One AWS account of ours | The only account with Roles Anywhere set up |
+| Client roles | Each client account | One role per profile, trusting the hub role |
+
+### Changes in AWS accounts
+
+- **Hub account (ours):** a trust anchor (the root CA certificate), a Roles Anywhere
+  profile, and one role per use, trusted by `rolesanywhere.amazonaws.com` with conditions
+  on the certificate subject. Free with our own CA (AWS Private CA would be ~$400/month).
+- **Client accounts:** *no Roles Anywhere, no CA.* Only an ordinary cross-account role
+  trusting the hub role, with an `sts:ExternalId`. That is the pattern clients already
+  accept for vendors, it is one CloudFormation stack or Terraform module, and the client
+  can delete it at any time to cut access.
+- **Today, for comparison:** clients issue an IAM user and a long-lived key, and
+  `mfa enforce` attaches an inline policy to that user. Both go away.
+
+### Flows
+
+- **Enrol the Mac (once):** zsp creates the device key, sends a CSR signed by it to the Pi,
+  you approve with a passkey tap (Face ID on your phone) against the Pi, the Pi returns a
+  certificate valid 7 days. Renewal: the same, with Touch ID instead of the passkey while
+  the old certificate is still valid.
+- **A command at the Mac:** credential_process → Touch ID → the device key signs
+  `CreateSession` (SigV4 X.509, `AWS4-X509-ECDSA-SHA256`) → a 1-hour hub session →
+  `AssumeRole` into the client role → cached session. The Pi is not involved, so the Pi
+  being down does not stop work until the certificate expires.
+- **Approval while away (Claude Code Remote Control):** zsp asks the Pi; you get a
+  passkey prompt on your phone; on approval the Pi signs a **15-minute** certificate for
+  the remote key, with a distinct OU, accepted only by a Roles Anywhere profile limited to
+  1-hour sessions. This replaces typing a 6-digit TOTP code. The remote key works without
+  Touch ID, so the window is that 15-minute certificate, and only after your tap.
+
+### Revocation and break-glass
+
+- One Mac: stop renewing its certificate (7 days at most), or import a CRL into the hub.
+- The Pi compromised: delete or disable the trust anchor in the hub account. Every
+  certificate stops working at once; client accounts need no change. Re-issue the
+  intermediate from the offline root.
+- A client: deletes its role.
+- Break-glass: console sign-in with MFA in the hub account, kept outside zsp.
+
+### What it fixes, what it does not
+
+| Gap | After |
+|---|---|
+| A long-lived key to steal, copy or leak | ✅ none exists |
+| Key swap in the vault | ✅ nothing to swap; the certificate and role are checked by AWS |
+| Audit rewritten on the Mac | ✅ CloudTrail in the hub logs every `CreateSession` with the certificate serial; the Pi logs every certificate it signs |
+| Key rotation | ✅ gone: certificates expire by themselves |
+| Malware running as you using a cached session | ⚠️ unchanged (inherent: anything you can do without a prompt, it can). Shorter sessions narrow it |
+| `~/.aws/config` rewired to another program | ⚠️ unchanged; `doctor` reports it |
+| The Pi compromised | ⚠️ attacker can mint certificates until the trust anchor is disabled; no keys to rotate afterwards |
+
+### Work
+
+1. Swift: Roles Anywhere `CreateSession` signing with a Secure Enclave key (AWS's
+   `aws_signing_helper` cannot use enclave keys). Tests against AWS's published examples.
+2. Pi service: intermediate CA, CSR endpoint, passkey (WebAuthn) approval, issuance log.
+   Its own container; no inbound ports beyond the tunnel.
+3. zsp: per-profile mode (`key` as today, or `roles-anywhere`), enrol, renew, and the
+   remote flow. Key mode stays as the fallback during migration.
+4. A CloudFormation template for client accounts (the cross-account role), and a
+   setup command for the hub.
+5. Migrate one profile (`bedrock`), then the rest; delete the IAM user keys last.
+
+### Open decisions
+
+- Which account is the hub.
+- Where the offline root CA key lives.
+- Certificate lifetimes (7 days device, 15 minutes remote are proposals).
+- Whether clients that refuse an external trust relationship stay on key mode.
+
 ## Later
 
 - Done in 0.3.0: this Mac as a virtual MFA device, `mfa enforce`, and approval by a phone
@@ -90,7 +181,7 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
   with `mfa_serial` + `role_arn` (AssumeRole with MFA).
 - Roles: `source_profile` already works through credential_process; native AssumeRole
   caching could come later.
-- IAM Identity Center (SSO) profiles, to remove long-lived keys entirely.
+- IAM Identity Center (SSO) profiles: an alternative to Roles Anywhere where accounts sit in one AWS Organization.
 - Off-box audit: ship each entry to CloudWatch Logs or S3 with Object Lock.
 - Developer ID signing and notarisation, for sharing beyond this Mac, and so the enclave
   keys can be restricted to this app (a keychain access group).
