@@ -38,13 +38,27 @@ and adds:
 
 ## What it looks like
 
-| Overview: status, health checks and tests | Keys: test, check in AWS, rotate, revoke |
-|---|---|
-| <img src="docs/images/overview.png" width="400" alt="Overview tab"> | <img src="docs/images/keys.png" width="400" alt="Keys tab"> |
-| **MFA & phone: the three steps per key** | **Onboarding: pick what moves, and whether new keys move automatically** |
-| <img src="docs/images/mfa.png" width="400" alt="MFA and phone tab"> | <img src="docs/images/setup.png" width="400" alt="Setup screen"> |
-| **Health checks** | **Touch ID before a key is used** |
-| <img src="docs/images/checks.png" width="400" alt="Health checks"> | <img src="docs/images/touch-id.png" width="300" alt="Touch ID dialog: AWS CLI: ZSP is trying to unlock your bedrock AWS key for a 1-hour session, for aws sts get-caller-identity"> |
+**Overview:** status, health checks and tests
+
+<img src="docs/images/overview.png" width="560" alt="Overview tab">
+
+**Keys:** test, check in AWS, rotate, revoke
+
+<img src="docs/images/keys.png" width="560" alt="Keys tab">
+
+**Onboarding:** pick which keys move, and whether new keys move automatically
+
+<img src="docs/images/setup.png" width="560" alt="Setup screen">
+
+**Health checks**
+
+<img src="docs/images/checks.png" width="560" alt="Health checks">
+
+**Touch ID before a key is used**
+
+<img src="docs/images/touch-id.png" width="300" alt="Touch ID dialog: AWS CLI: ZSP is trying to unlock your bedrock AWS key for a 1-hour session, for aws sts get-caller-identity">
+
+The **MFA & phone** tab is shown in [MFA, and approving from your phone](#mfa-and-approving-from-your-phone).
 
 Every step in this README has a button: **Setup** in the footer re-runs onboarding, **Run
 checks** is `aws-cli-zsp doctor`, **Test Touch ID** / **Test auto-move** / **Verify audit
