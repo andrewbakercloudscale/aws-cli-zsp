@@ -19,6 +19,8 @@ This is what any program running as you can read on a normal Mac with the AWS CL
 Every key there is a standing permission: it works from anywhere, forever, for whoever copies
 it. After aws-cli-zsp the same file holds no keys at all, and the AWS CLI still works.
 
+<img src="docs/images/diagram-overview.png" width="680" alt="Overview: a key written to ~/.aws is moved and sealed within seconds; an aws command asks for Touch ID once and gets a 1-hour session; away from the Mac, a code from your phone approves the session">
+
 It is built from scratch on the ideas behind [aws-vault](https://github.com/ByteNess/aws-vault),
 and adds:
 
@@ -104,51 +106,11 @@ Anything that writes a key (`aws configure`, a paste, an installer script) trigg
 which runs the importer. The key is sealed and read back before the file is touched, and the
 profile is pointed at aws-cli-zsp instead.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor You
-    participant File as ~/.aws/credentials
-    participant launchd as launchd (WatchPaths + 5-min sweep)
-    participant ZSP as aws-cli-zsp import --auto
-    participant SE as Secure Enclave
-    participant Vault as vault/ (sealed files)
-    participant Config as ~/.aws/config
-
-    You->>File: aws configure / paste a key
-    File-->>launchd: file changed
-    launchd->>ZSP: run importer
-    ZSP->>File: parse every profile with aws_secret_access_key
-    ZSP->>SE: public key of the "guarded" enclave key (no prompt)
-    ZSP->>Vault: ECDH + HKDF + AES-GCM seal, profile name bound as AAD
-    ZSP->>Vault: read back and verify
-    ZSP->>File: remove the key lines (atomic rewrite, 0600)
-    ZSP->>Config: credential_process = aws-cli-zsp credential-process --profile NAME
-    ZSP->>ZSP: audit: key.imported (hash-chained)
-```
+<img src="docs/images/diagram-intercept.png" width="680" alt="Steps: a key written to ~/.aws/credentials triggers launchd, aws-cli-zsp seals it with the Secure Enclave, verifies it, removes it from the file and points the profile at credential_process">
 
 ### 2. Where the keys are stored
 
-```mermaid
-flowchart LR
-    subgraph Chip["Secure Enclave (keys never leave the chip)"]
-        G["guarded key<br/>P-256, .userPresence<br/>Touch ID required"]
-        Q["quiet key<br/>P-256, no prompt"]
-    end
-    subgraph Disk["~/Library/Application Support/aws-cli-zsp"]
-        K["vault/keys/<br/>enclave key blobs<br/>(useless off this Mac)"]
-        M["vault/master/*<br/>long-lived AKIA keys<br/>sealed to the guarded key"]
-        S["vault/session/*<br/>1-hour STS sessions<br/>sealed to the quiet key"]
-        H["vault/audit-head<br/>newest audit hash<br/>sealed to the quiet key"]
-        A["audit.jsonl<br/>hash-chained trail"]
-        P["profiles.json<br/>key ids (masked), last use<br/>no secrets"]
-    end
-    G -. unseals .-> M
-    Q -. unseals .-> S
-    Q -. unseals .-> H
-    H -. anchors .-> A
-    C["~/.aws/credentials"] --- N["no secrets:<br/>a comment header only"]
-```
+<img src="docs/images/diagram-storage.png" width="680" alt="The Secure Enclave holds a guarded key (Touch ID) and a quiet key; the vault files are sealed to one or the other, and ~/.aws/credentials holds no secrets">
 
 Nothing secret is in a plain file, the Keychain or memory longer than one STS call. Copying
 the folder to another machine gets you nothing: the enclave keys only work inside this Mac's chip.
@@ -158,34 +120,7 @@ the folder to another machine gets you nothing: the enclave keys only work insid
 The AWS CLI and every SDK support `credential_process`: they run a command and read JSON
 credentials from it. aws-cli-zsp is that command, so nothing needs a wrapper.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant CLI as aws s3 ls --profile bedrock
-    participant ZSP as aws-cli-zsp credential-process
-    participant Vault as vault/
-    participant SE as Secure Enclave
-    actor You
-    participant STS as AWS STS (regional)
-
-    CLI->>ZSP: credential_process (from ~/.aws/config)
-    ZSP->>Vault: cached session for bedrock?
-    alt session has more than 5 minutes left
-        Vault-->>ZSP: unseal with the quiet key (no prompt)
-        ZSP->>ZSP: audit: session.served (who asked)
-    else no session
-        ZSP->>SE: unseal the long-lived key
-        SE->>You: Touch ID: "AWS CLI: ZSP is trying to unlock your bedrock AWS key…"
-        You-->>SE: fingerprint
-        SE-->>ZSP: long-lived key, in memory only
-        ZSP->>STS: GetSessionToken (SigV4, 1h by default)
-        STS-->>ZSP: temporary key + session token
-        ZSP->>Vault: seal the session (quiet key)
-        ZSP->>ZSP: drop the long-lived key, audit: session.issued
-    end
-    ZSP-->>CLI: {"Version":1, AccessKeyId, SecretAccessKey, SessionToken, Expiration}
-    CLI->>CLI: signs the request with the session
-```
+<img src="docs/images/diagram-credential-process.png" width="680" alt="aws runs credential_process; a cached session is served with no prompt, otherwise Touch ID opens the key, STS issues a 1-hour session and the key is dropped">
 
 The CLI only ever holds a session. A leaked session expires on its own, cannot call IAM to
 mint a new key, and **Revoke sessions** kills every one issued so far.
@@ -274,26 +209,7 @@ With Claude Code Remote Control, from your phone:
 4. Claude runs `aws-cli-zsp approve`, AWS checks the code, and the session lasts the usual
    hour: nothing asks again until it expires.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor You as You (phone)
-    participant CC as Claude Code (on the Mac)
-    participant ZSP as aws-cli-zsp
-    participant STS as AWS STS
-
-    CC->>ZSP: aws s3 ls --profile bedrock (credential_process)
-    ZSP->>ZSP: no session, nobody at the Mac
-    ZSP-->>CC: error: ask the user for an MFA code, then aws-cli-zsp approve
-    CC->>You: "I need the 6-digit code for bedrock"
-    You-->>CC: 123456 (from your authenticator app)
-    CC->>ZSP: aws-cli-zsp approve --profile bedrock 123456
-    ZSP->>STS: GetSessionToken with the key, your phone's MFA serial and the code
-    STS-->>ZSP: session (1 hour by default)
-    ZSP->>ZSP: seal the session, audit: session.issued approved=mfa-code
-    CC->>ZSP: aws s3 ls --profile bedrock (again)
-    ZSP-->>CC: the cached session, no prompt
-```
+<img src="docs/images/diagram-remote.png" width="680" alt="Claude Code over Remote Control asks you for a code, you send it from your phone, aws-cli-zsp approve gets a session from STS with it">
 
 Why this is safe: approval by code needs a copy of the key that opens without Touch ID
 (sealed to the enclave's no-prompt key, so still useless off this Mac). That copy has no MFA
@@ -358,15 +274,18 @@ aws-cli-zsp uninstall [--restore-plaintext]
 ## Development
 
 ```bash
-swift test                               # 38 tests, including the real Secure Enclave (no-prompt tier)
+swift test                               # 44 tests, including the real Secure Enclave (no-prompt tier)
 ZSP_NETWORK_TESTS=1 swift test           # adds a real STS call with a fake key (expects InvalidClientTokenId)
 ```
 
 To try it without touching your real setup, point it at a sandbox with
 `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE` and `ZSP_HOME`.
-`ZSPMenu --snapshot out.png [--audit]` renders the panel to a file (the screenshots above are
-made that way, from a sandbox holding AWS's documented example keys). The app icon is drawn by
-`swift scripts/make-icon.swift`.
+`ZSPMenu --snapshot out.png [--keys|--mfa|--audit|--setup|--about|--checks|--qr]` renders the
+panel to a file (the screenshots above are made that way, from a sandbox holding AWS's
+documented example keys). The app icon is drawn by `swift scripts/make-icon.swift`. The
+diagrams are HTML in `docs/diagrams/diagrams.html`, rendered to PNG by
+`bash scripts/render-diagrams.sh` (needs Playwright; images rather than Mermaid because
+GitHub's mobile app shows Mermaid as source).
 
 ## License
 

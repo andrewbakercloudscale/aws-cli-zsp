@@ -1,0 +1,264 @@
+<!doctype html>
+<!-- The README diagrams. Edit here, then: bash scripts/render-diagrams.sh (writes docs/images/diagram-*.png).
+     Drawn as images rather than Mermaid because GitHub's mobile app shows Mermaid as source code,
+     and laid out narrow and top-down so they stay readable on a phone. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #0f172a; --body: #374151; --muted: #64748b; --line: #e2e8f0;
+    --orange: #ea580c; --teal: #0d9488; --indigo: #4f46e5; --violet: #7c3aed;
+    --green: #16a34a; --red: #dc2626; --blue: #2563eb; --slate: #64748b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; color: var(--body); }
+  .diagram { width: 680px; margin: 24px; padding: 28px 28px 24px; background: #fff; border-radius: 22px; border: 1px solid var(--line); }
+  h1 { margin: 0 0 4px; font-size: 26px; color: var(--ink); letter-spacing: -0.01em; }
+  .sub { margin: 0 0 22px; font-size: 17px; color: var(--muted); line-height: 1.4; }
+  code, .mono { font-family: "SF Mono", Menlo, monospace; font-size: 0.9em; }
+
+  /* participants */
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 999px; font-size: 15px; font-weight: 600; white-space: nowrap; }
+  .c-you { background: #fff7ed; color: #9a3412; }
+  .c-file { background: #fef2f2; color: #b91c1c; }
+  .c-launchd { background: #f1f5f9; color: #334155; }
+  .c-zsp { background: #eef2ff; color: #4338ca; }
+  .c-se { background: #f0fdfa; color: #0f766e; }
+  .c-vault { background: #ecfdf5; color: #15803d; }
+  .c-config { background: #eff6ff; color: #1d4ed8; }
+  .c-sts { background: #fefce8; color: #a16207; }
+  .c-cli { background: #f8fafc; color: #0f172a; border: 1px solid var(--line); }
+  .c-cc { background: #faf5ff; color: #6d28d9; }
+  .arrow { color: var(--muted); font-size: 16px; margin: 0 2px; }
+
+  /* numbered steps */
+  .steps { position: relative; }
+  .step { position: relative; display: grid; grid-template-columns: 36px 1fr; gap: 14px; padding-bottom: 16px; }
+  .step:not(:last-child)::before { content: ""; position: absolute; left: 17px; top: 36px; bottom: 0; width: 2px; background: var(--line); }
+  .n { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 16px; color: #fff; background: var(--indigo); }
+  .who { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 5px 0 6px; }
+  .what { font-size: 17px; line-height: 1.4; color: var(--body); }
+  .what b { color: var(--ink); }
+  .n.orange { background: var(--orange); } .n.teal { background: var(--teal); } .n.green { background: var(--green); }
+  .n.violet { background: var(--violet); } .n.slate { background: var(--slate); } .n.red { background: var(--red); }
+
+  /* branches */
+  .branch { border-radius: 16px; padding: 16px 16px 2px; margin: 0 0 16px 50px; }
+  .branch h2 { margin: 0 0 12px; font-size: 17px; }
+  .b-fast { background: #f0fdf4; border: 1px solid #bbf7d0; } .b-fast h2 { color: #15803d; }
+  .b-slow { background: #faf5ff; border: 1px solid #e9d5ff; } .b-slow h2 { color: #6d28d9; }
+  .or { margin: -4px 0 12px 50px; font-size: 14px; font-weight: 700; color: var(--muted); letter-spacing: 0.08em; }
+
+  /* overview */
+  .row { border-radius: 18px; padding: 18px; margin-bottom: 14px; }
+  .row h2 { margin: 0 0 14px; font-size: 18px; color: var(--ink); }
+  .r1 { background: linear-gradient(135deg, #fef2f2, #fff7ed); }
+  .r2 { background: linear-gradient(135deg, #f0fdfa, #eef2ff); }
+  .r3 { background: linear-gradient(135deg, #faf5ff, #eef2ff); }
+  .flow { display: grid; grid-template-columns: 1fr 22px 1fr 22px 1fr; align-items: stretch; }
+  .node { background: #fff; border-radius: 14px; padding: 12px; font-size: 15px; line-height: 1.35; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+  .node b { display: block; font-size: 16px; color: var(--ink); margin-bottom: 3px; }
+  .to { display: grid; place-items: center; color: var(--muted); font-size: 20px; }
+  .icon { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; margin-bottom: 8px; color: #fff; font-weight: 800; font-size: 15px; }
+
+  /* storage */
+  .box { border-radius: 18px; padding: 16px; margin-bottom: 14px; }
+  .box h2 { margin: 0 0 12px; font-size: 17px; }
+  .chipbox { background: linear-gradient(135deg, #0f766e, #4f46e5); color: #fff; }
+  .chipbox h2 { color: #fff; }
+  .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ekey { background: rgba(255,255,255,.14); border-radius: 12px; padding: 12px; font-size: 15px; line-height: 1.4; }
+  .ekey b { display: block; font-size: 17px; margin-bottom: 2px; }
+  .disk { background: #f8fafc; border: 1px solid var(--line); }
+  .disk h2 { color: var(--ink); }
+  .file { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; background: #fff; border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; border-left: 5px solid var(--slate); font-size: 15px; }
+  .file .mono { color: var(--ink); font-weight: 600; }
+  .file small { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+  .f-guarded { border-left-color: var(--orange); } .f-quiet { border-left-color: var(--teal); } .f-plain { border-left-color: #cbd5e1; }
+  .tag { font-size: 13px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .t-guarded { background: #fff7ed; color: #c2410c; } .t-quiet { background: #f0fdfa; color: #0f766e; } .t-plain { background: #f1f5f9; color: #475569; }
+  .aws { background: #f0fdf4; border: 1px solid #bbf7d0; }
+  .aws h2 { color: #15803d; }
+  .note { font-size: 15px; color: var(--muted); line-height: 1.45; margin: 4px 2px 0; }
+</style>
+</head>
+<body>
+
+<!-- 0: overview -->
+<section class="diagram" id="overview">
+  <h1>aws-cli-zsp at a glance</h1>
+  <p class="sub">No readable key on the Mac, no session that outlives its hour.</p>
+
+  <div class="row r1">
+    <h2>A key lands in ~/.aws</h2>
+    <div class="flow">
+      <div class="node"><span class="icon" style="background:#dc2626">!</span><b>Plaintext key</b><code>aws configure</code>, a paste, a script</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#475569">⟳</span><b>Watcher</b>moves it within seconds</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#0d9488">✓</span><b>Sealed</b>by the Secure Enclave; file left with no key</div>
+    </div>
+  </div>
+
+  <div class="row r2">
+    <h2>You run an aws command</h2>
+    <div class="flow">
+      <div class="node"><span class="icon" style="background:#0f172a">›_</span><b>aws s3 ls</b>any CLI or SDK, no wrapper</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#ea580c">☝</span><b>Touch ID</b>once, naming the key and the command</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#4f46e5">1h</span><b>Session</b>reused without asking until it expires</div>
+    </div>
+  </div>
+
+  <div class="row r3">
+    <h2>You're away (Claude Code Remote Control)</h2>
+    <div class="flow">
+      <div class="node"><span class="icon" style="background:#7c3aed">?</span><b>Claude asks</b>“I need the 6-digit code for bedrock”</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#2563eb">#</span><b>Your phone</b>code from Google Authenticator or any TOTP app</div>
+      <div class="to">→</div>
+      <div class="node"><span class="icon" style="background:#16a34a">✓</span><b>AWS checks it</b>and issues the session</div>
+    </div>
+  </div>
+  <p class="note">Every use is written to a hash-chained audit trail, with the program that asked.</p>
+</section>
+
+<!-- 1: intercept -->
+<section class="diagram" id="intercept">
+  <h1>1. Intercepting keys written to ~/.aws</h1>
+  <p class="sub">The key is sealed and read back before the file is touched.</p>
+  <div class="steps">
+    <div class="step"><div class="n orange">1</div><div>
+      <div class="who"><span class="chip c-you">You</span><span class="arrow">→</span><span class="chip c-file">~/.aws/credentials</span></div>
+      <div class="what"><code>aws configure</code>, or paste a key</div></div></div>
+    <div class="step"><div class="n slate">2</div><div>
+      <div class="who"><span class="chip c-file">~/.aws/credentials</span><span class="arrow">→</span><span class="chip c-launchd">launchd</span></div>
+      <div class="what">The file changed (WatchPaths), or the <b>5-minute sweep</b> runs</div></div></div>
+    <div class="step"><div class="n">3</div><div>
+      <div class="who"><span class="chip c-launchd">launchd</span><span class="arrow">→</span><span class="chip c-zsp">aws-cli-zsp import --auto</span></div>
+      <div class="what">Finds every profile with an <code>aws_secret_access_key</code></div></div></div>
+    <div class="step"><div class="n teal">4</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-se">Secure Enclave</span></div>
+      <div class="what">Public half of the <b>guarded</b> enclave key (no prompt to seal, only to open)</div></div></div>
+    <div class="step"><div class="n green">5</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-vault">vault/</span></div>
+      <div class="what"><b>Seal</b>: ECDH + HKDF + AES-GCM, profile name bound in. Then <b>read back and verify</b></div></div></div>
+    <div class="step"><div class="n red">6</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-file">~/.aws/credentials</span></div>
+      <div class="what"><b>Remove the key lines</b> (atomic rewrite, mode 0600)</div></div></div>
+    <div class="step"><div class="n">7</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-config">~/.aws/config</span></div>
+      <div class="what"><code>credential_process = aws-cli-zsp credential-process --profile NAME</code></div></div></div>
+    <div class="step"><div class="n slate">8</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what">Audit: <code>key.imported</code>, hash-chained</div></div></div>
+  </div>
+</section>
+
+<!-- 2: storage -->
+<section class="diagram" id="storage">
+  <h1>2. Where the keys are stored</h1>
+  <p class="sub">Copying the folder to another Mac gets nothing: the enclave keys only work inside this chip.</p>
+
+  <div class="box chipbox">
+    <h2>Secure Enclave · the keys never leave the chip</h2>
+    <div class="keys">
+      <div class="ekey"><b>Guarded key</b>P-256, <code>.userPresence</code><br>Touch ID required to open</div>
+      <div class="ekey"><b>Quiet key</b>P-256<br>opens without a prompt</div>
+    </div>
+  </div>
+
+  <div class="box disk">
+    <h2>~/Library/Application Support/aws-cli-zsp</h2>
+    <div class="file f-guarded"><div><span class="mono">vault/master/*</span><small>the long-lived AKIA keys</small></div><span class="tag t-guarded">guarded key</span></div>
+    <div class="file f-quiet"><div><span class="mono">vault/session/*</span><small>1-hour STS sessions</small></div><span class="tag t-quiet">quiet key</span></div>
+    <div class="file f-quiet"><div><span class="mono">vault/audit-head</span><small>newest audit hash: anchors the trail</small></div><span class="tag t-quiet">quiet key</span></div>
+    <div class="file f-plain"><div><span class="mono">vault/keys/</span><small>enclave key blobs, useless off this Mac</small></div><span class="tag t-plain">chip-bound</span></div>
+    <div class="file f-plain"><div><span class="mono">audit.jsonl</span><small>hash-chained trail of every use</small></div><span class="tag t-plain">no secrets</span></div>
+    <div class="file f-plain"><div><span class="mono">profiles.json</span><small>masked key ids, last use</small></div><span class="tag t-plain">no secrets</span></div>
+  </div>
+
+  <div class="box aws">
+    <h2>~/.aws/credentials</h2>
+    <div class="note" style="margin:0;color:#166534">No secrets: a comment header only.</div>
+  </div>
+</section>
+
+<!-- 3: credential_process -->
+<section class="diagram" id="credential-process">
+  <h1>3. How the AWS CLI gets credentials</h1>
+  <p class="sub">The CLI and every SDK run <code>credential_process</code> and read JSON from it.</p>
+  <div class="steps">
+    <div class="step"><div class="n slate">1</div><div>
+      <div class="who"><span class="chip c-cli">aws s3 ls --profile bedrock</span><span class="arrow">→</span><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what">Runs <code>credential_process</code> from ~/.aws/config</div></div></div>
+    <div class="step"><div class="n">2</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-vault">vault/</span></div>
+      <div class="what">Is there a session for bedrock with more than 5 minutes left?</div></div></div>
+  </div>
+
+  <div class="branch b-fast">
+    <h2>Yes: most commands</h2>
+    <div class="steps">
+      <div class="step"><div class="n green">3</div><div><div class="what">Unseal it with the <b>quiet key</b>. No prompt.</div></div></div>
+      <div class="step"><div class="n green">4</div><div><div class="what">Audit: <code>session.served</code>, with who asked</div></div></div>
+    </div>
+  </div>
+  <div class="or">OR</div>
+  <div class="branch b-slow">
+    <h2>No: the first command each hour</h2>
+    <div class="steps">
+      <div class="step"><div class="n orange">3</div><div>
+        <div class="who"><span class="chip c-se">Secure Enclave</span><span class="arrow">→</span><span class="chip c-you">You</span></div>
+        <div class="what"><b>Touch ID</b>: “AWS CLI: ZSP is trying to unlock your bedrock AWS key…”</div></div></div>
+      <div class="step"><div class="n teal">4</div><div><div class="what">The long-lived key is opened, <b>in memory only</b></div></div></div>
+      <div class="step"><div class="n violet">5</div><div>
+        <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-sts">AWS STS</span></div>
+        <div class="what"><code>GetSessionToken</code>: a temporary key, 1 hour by default</div></div></div>
+      <div class="step"><div class="n green">6</div><div><div class="what">Seal the session (quiet key), <b>drop the long-lived key</b>, audit <code>session.issued</code></div></div></div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <div class="step"><div class="n slate">7</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-cli">aws</span></div>
+      <div class="what">The session as JSON. The CLI signs the request with it.</div></div></div>
+  </div>
+</section>
+
+<!-- 4: remote approval -->
+<section class="diagram" id="remote">
+  <h1>Approving from your phone</h1>
+  <p class="sub">Claude Code over Remote Control, nobody at the Mac.</p>
+  <div class="steps">
+    <div class="step"><div class="n violet">1</div><div>
+      <div class="who"><span class="chip c-cc">Claude Code (on the Mac)</span><span class="arrow">→</span><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what"><code>aws s3 ls --profile bedrock</code></div></div></div>
+    <div class="step"><div class="n red">2</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-cc">Claude Code</span></div>
+      <div class="what">No session and nobody at the Mac: <b>fails at once</b> instead of a Touch ID prompt nobody sees, and says to ask for a code</div></div></div>
+    <div class="step"><div class="n violet">3</div><div>
+      <div class="who"><span class="chip c-cc">Claude Code</span><span class="arrow">→</span><span class="chip c-you">You (phone)</span></div>
+      <div class="what">“I need the 6-digit code for bedrock”</div></div></div>
+    <div class="step"><div class="n orange">4</div><div>
+      <div class="who"><span class="chip c-you">You (phone)</span><span class="arrow">→</span><span class="chip c-cc">Claude Code</span></div>
+      <div class="what"><b>123456</b>, from your authenticator app</div></div></div>
+    <div class="step"><div class="n">5</div><div>
+      <div class="who"><span class="chip c-cc">Claude Code</span><span class="arrow">→</span><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what"><code>aws-cli-zsp approve --profile bedrock 123456</code></div></div></div>
+    <div class="step"><div class="n teal">6</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span><span class="arrow">→</span><span class="chip c-sts">AWS STS</span></div>
+      <div class="what"><code>GetSessionToken</code> with your phone's MFA serial and the code. <b>AWS checks it</b></div></div></div>
+    <div class="step"><div class="n green">7</div><div>
+      <div class="who"><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what">Seal the session, audit <code>session.issued approved=mfa-code</code></div></div></div>
+    <div class="step"><div class="n slate">8</div><div>
+      <div class="who"><span class="chip c-cc">Claude Code</span><span class="arrow">→</span><span class="chip c-zsp">aws-cli-zsp</span></div>
+      <div class="what">Runs the command again: the cached session, <b>no prompt for the rest of the hour</b></div></div></div>
+  </div>
+</section>
+
+</body>
+</html>
