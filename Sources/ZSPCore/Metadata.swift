@@ -23,6 +23,8 @@ public struct ProfileMeta: Codable, Equatable, Identifiable, Sendable {
     public var mfaEnforced: Bool?
     /// The MFA device (your phone) whose codes approve a session when nobody is at the Mac.
     public var remoteSerial: String?
+    /// For display only: the account in the Keychain pin, which is what is checked.
+    public var pinnedAccount: String?
     /// Not stored: whether the key is in the Keychain right now.
     public var inKeychain: Bool?
 

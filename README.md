@@ -246,6 +246,7 @@ aws-cli-zsp mfa confirm-phone --profile P --serial ARN CODE1 CODE2
 aws-cli-zsp mfa cancel-phone --profile P --serial ARN
 aws-cli-zsp remote enable [--serial ARN] | disable --profile P
 aws-cli-zsp approve --profile P CODE
+aws-cli-zsp pin show | reset --profile P      the AWS account and user the profile is pinned to
 aws-cli-zsp audit [--verify] [--limit N]
 aws-cli-zsp migrate                           move 0.1.x Keychain items into the vault
 aws-cli-zsp check-touch-id                    show the Touch ID prompt, unlock nothing
@@ -266,23 +267,41 @@ aws-cli-zsp uninstall [--restore-plaintext]
 | A program that wants your long-lived key | ✅ only the Secure Enclave can unseal it, and only after Touch ID |
 | A key copied off the Mac some other way | ✅ with **MFA enforced**, AWS refuses it without a code |
 | Malware running as you, **while a session is cached** | ⚠️ it can use that session until it expires (1 hour by default) |
-| Malware running as you **swapping your key for its own** | ⚠️ not prevented: see below |
+| Malware running as you **swapping your key for its own** | ✅ refused: the profile is pinned to its AWS account |
+| Malware running as you **planting a session of its own** | ✅ refused: only the session aws-cli-zsp issued is served |
+| Malware running as you **rewiring `~/.aws/config`** to its own program | ⚠️ not prevented: **Run checks** shows it |
 | Malware running as you **rewriting the audit trail** | ⚠️ not prevented: see below |
 
-The last three come from one fact: malware running under your macOS user can do what you can
+The ⚠️ rows come from one fact: malware running under your macOS user can do what you can
 do without Touch ID.
 
 - **It can use a cached session.** Reusing a session without asking is the point of a
   session, so anything running as you gets one too, until it expires; the same trade-off
   aws-vault makes. `clear-sessions`, a shorter `duration`, or **Revoke all sessions** narrow
   the window. It never gets the long-lived key.
-- **It can replace your key with one of its own.** Sealing a key into the vault needs only
-  the Secure Enclave's *public* key, which is not secret (Touch ID is needed to open a key,
-  not to lock one). So malware cannot read your `bedrock` key, but it can store a key for
-  *its own* AWS account under the name `bedrock`. Your commands would then quietly run
-  against the attacker's account: `aws s3 cp backup.zip s3://…` would upload to their
-  bucket. **How to spot it:** **Test** or **Check in AWS** on the key shows the account and
-  ARN it really belongs to. If that is not your account, the key was swapped.
+- **Swapping your key is caught by account pinning.** Sealing a key into the vault needs
+  only the Secure Enclave's *public* key, which is not secret (Touch ID opens a key, it is
+  not needed to lock one). So malware cannot read your `bedrock` key, but it could store a
+  key for *its own* AWS account under the name `bedrock`, and your commands would quietly
+  run against the attacker's account (`aws s3 cp backup.zip s3://…` would upload to their
+  bucket). To stop that, the first session for a profile records its AWS account and IAM
+  user in the **login Keychain**, and every later session is checked against it (one
+  GetCallerIdentity call per session, not per command). A key to another account or user
+  gets nothing: the session is thrown away, `key.swapped` goes in the audit trail, and the
+  error says what happened. Rotating the key, or re-importing a new key for the same user,
+  passes.
+  - *Why not just a hash?* Anything malware can write, it can re-hash: a hash in the vault
+    folder or `profiles.json` would simply be recomputed for the attacker's key. The pin
+    works because of *where* it lives: a login Keychain item trusts only the program that
+    made it, so anything else changing or deleting it gets a macOS prompt.
+  - The pin also records which session aws-cli-zsp issued, so a session written into the
+    vault by something else is deleted, not served (`session.swapped`).
+  - Changed the key to another account yourself? `aws-cli-zsp pin reset --profile P`
+    (Touch ID). Deleting or forgetting a key removes its pin.
+- **It can point `~/.aws/config` at a program of its own.** The `credential_process` line
+  is a plain file; malware can change it so the AWS CLI asks something else for
+  credentials. aws-cli-zsp is then not involved at all, so it cannot refuse anything.
+  **Run checks** (and `aws-cli-zsp doctor`) shows any profile not wired to aws-cli-zsp.
 - **It can rewrite the audit trail.** Each entry is hash-chained to the one before, and the
   newest hash is sealed in the vault, so editing or deleting entries by hand is caught by
   **Verify chain**. But that seal uses the no-prompt key (so sessions can be reused without
@@ -290,9 +309,8 @@ do without Touch ID.
   and Verify chain still says "intact". Treat the trail as a record of what happened, not
   as evidence against an attacker on this Mac; AWS CloudTrail is the record it cannot touch.
 
-What would close these gaps (see PLAN.md): pinning each key's AWS account when it is first
-moved and warning if it changes; sending the audit trail off the Mac (CloudWatch, or S3
-with Object Lock); and signing with an Apple Developer ID so the enclave keys can be
+What would close the rest (see PLAN.md): sending the audit trail off the Mac (CloudWatch,
+or S3 with Object Lock), and signing with an Apple Developer ID so the enclave keys can be
 restricted to this app alone.
 
 ### Other limits

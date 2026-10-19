@@ -77,6 +77,8 @@ public final class Vault {
     /// or no keyboard or mouse for a while, as under Claude Code Remote Control), a new session
     /// fails at once with what to do instead, rather than waiting on a prompt nobody can see.
     public var someoneAtMac: () -> Bool = { true }
+    /// Where account pins live (the login Keychain). Nil turns pinning off.
+    public var pins: SecretStore?
 
     public init(paths: Paths, store: SecretStore, auth: UserPresence, aws: AWSService, commandPath: String) {
         self.paths = paths
@@ -241,6 +243,15 @@ public final class Vault {
             if let data = try store.read(.session, profile),
                let s = try? ZSPJSON.decoder.decode(AWSCredentials.self, from: data),
                let exp = s.expiration, exp > t.addingTimeInterval(300) {
+                guard try isPinnedSession(profile, s) else {
+                    try store.delete(.session, profile)
+                    _ = try? audit.append("session.swapped", profile: profile, ok: false,
+                                          detail: ["found": maskKeyId(s.accessKeyId)], requester: requester)
+                    throw ZSPError.auth("""
+                        The cached session for “\(profile)” is not one aws-cli-zsp issued, so it was deleted and not used. \
+                        Something running as you may have written it. Run the command again to start a new session with Touch ID.
+                        """)
+                }
                 try audit.append("session.served", profile: profile, detail: ["expires": iso8601(exp)], requester: requester)
                 try? meta.update(profile) { $0?.lastUsedAt = t; $0?.lastRequester = requester; $0?.sessionExpiresAt = exp }
                 return s
@@ -253,6 +264,7 @@ public final class Vault {
             let reason = "unlock your “\(profile)” AWS key for a \(durationText(seconds)) session, for \(asker ?? requester)"
             let master = try unlock(profile, reason: reason, requester: requester)
             if master.sessionToken != nil {
+                try checkPin(profile, master.credentials, requester: requester)
                 try audit.append("session.served", profile: profile, detail: ["temporary": "true"], requester: requester)
                 try? meta.update(profile) { $0?.lastUsedAt = t; $0?.lastRequester = requester }
                 return master.credentials
@@ -273,6 +285,7 @@ public final class Vault {
                               requester: requester)
             throw error
         }
+        try checkPin(profile, session, requester: requester)
         try store.write(.session, profile, try ZSPJSON.encoder.encode(session))
         var detail = ["keyId": maskKeyId(master.accessKeyId), "seconds": String(seconds),
                       "expires": session.expiration.map(iso8601) ?? "?", "approved": approvedBy]
@@ -743,6 +756,7 @@ public final class Vault {
         try aws.deleteAccessKey(try adminCredentials(master), keyId: master.accessKeyId)
         try audit.append("key.deleted", profile: profile, detail: ["keyId": maskKeyId(master.accessKeyId)])
         try removeLocal(profile)
+        dropPin(profile)
     }
 
     /// Removes the key from this Mac only. AWS still has it.
@@ -750,6 +764,7 @@ public final class Vault {
         let master = try unlock(profile, reason: "remove the AWS key for profile “\(profile)” from this Mac")
         try audit.append("key.forgotten", profile: profile, detail: ["keyId": maskKeyId(master.accessKeyId)])
         try removeLocal(profile)
+        dropPin(profile)
     }
 
     func removeLocal(_ profile: String) throws {
@@ -826,6 +841,7 @@ public final class Vault {
         for profile in profiles {
             try audit.append("key.restored", profile: profile)
             try removeLocal(profile)
+            dropPin(profile)
         }
         return profiles
     }

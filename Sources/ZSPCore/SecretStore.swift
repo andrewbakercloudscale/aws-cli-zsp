@@ -12,6 +12,8 @@ public enum SecretKind: String, CaseIterable, Sendable {
     /// A copy of a long-lived key, without this Mac's MFA seed, for approval by an MFA code
     /// from your phone when nobody is at the Mac. Only made by `aws-cli-zsp remote enable`.
     case remote
+    /// The AWS account and user a profile is pinned to. Only ever in the login Keychain.
+    case pin
 }
 
 public protocol SecretStore: AnyObject {

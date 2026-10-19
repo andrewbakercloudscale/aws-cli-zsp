@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.3.0"
+let version = "0.3.1"
 
 let usage = """
 aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
@@ -38,6 +38,10 @@ Rotate and revoke
   aws-cli-zsp disable-key --profile P          deactivate the key in AWS (re-enable in the IAM console)
   aws-cli-zsp delete-key --profile P           delete the key in AWS and on this Mac
   aws-cli-zsp forget --profile P               remove the key from this Mac only
+
+Account pinning (a key swapped for one to another account is refused)
+  aws-cli-zsp pin show --profile P             the account and user the profile is pinned to
+  aws-cli-zsp pin reset --profile P            after you changed the key to another account yourself
 
 Setup and tests
   aws-cli-zsp setup [--move a,b] [--keep c] [--auto on|off] [--duration 1h]   first run: what moves, what stays, auto-move
@@ -171,6 +175,8 @@ func makeVault() -> Vault {
     store.context = { presence.context }
     let vault = Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
     vault.someoneAtMac = someoneAtMac
+    // Pins live in the login Keychain, outside the vault folder. A sandbox has none.
+    if ProcessInfo.processInfo.environment["ZSP_HOME"] == nil { vault.pins = KeychainStore() }
     return vault
 }
 
@@ -271,6 +277,7 @@ func cmdList() {
         var mfa = ""
         if p.mfaSerial != nil { mfa += p.mfaEnforced == true ? " [MFA enforced]" : " [MFA]" }
         if let r = p.remoteSerial { mfa += " [remote: \(r.split(separator: "/").last ?? "")]" }
+        if let a = p.pinnedAccount { mfa += " [pinned: \(a)]" }
         lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(mfa)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
     }
     for f in findings { lines.append("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
@@ -514,6 +521,24 @@ func cmdRemote() throws {
     }
 }
 
+func cmdPin() throws {
+    let profile = requireProfile()
+    let vault = makeVault()
+    switch opts.rest.first ?? "show" {
+    case "show":
+        guard let p = try vault.pin(profile) else {
+            done(["profile": profile], vault.pins == nil ? "pinning is off (ZSP_HOME is set)" : "\(profile) is not pinned yet: its next session pins it")
+            return
+        }
+        done(p, "\(profile) is pinned to \(p.arn) (account \(p.account)) since \(clock(p.pinnedAt))")
+    case "reset":
+        try vault.resetPin(profile)
+        done(["profile": profile], "pin removed: the next session for \(profile) pins whatever account its key is in")
+    default:
+        fail("usage: aws-cli-zsp pin show|reset --profile P")
+    }
+}
+
 func cmdApprove() throws {
     let profile = requireProfile()
     guard let code = opts.rest.first else { fail("usage: aws-cli-zsp approve --profile \(profile) CODE (the 6 digits from your MFA app)") }
@@ -628,6 +653,13 @@ func cmdDoctor() {
     let mfa = profiles.filter { $0.mfaEnforced == true }.map(\.profile)
     checks.append(Check(name: "MFA enforced by AWS", ok: true,
                         detail: mfa.isEmpty ? "not yet for any profile (MFA & phone tab)" : "for \(mfa.joined(separator: ", "))", warn: mfa.isEmpty))
+    if ProcessInfo.processInfo.environment["ZSP_HOME"] == nil {
+        let pins = KeychainStore()
+        let unpinned = profiles.filter { !$0.temporary && pins.peek(.pin, $0.profile) == nil }.map(\.profile)
+        checks.append(Check(name: "Accounts pinned", ok: true,
+                            detail: unpinned.isEmpty ? "every key is checked against its AWS account before a session is handed out" : "not yet: \(unpinned.joined(separator: ", ")) (pinned at the next session)",
+                            warn: !unpinned.isEmpty))
+    }
     let failed = checks.filter { !$0.ok }.count
     done(checks, checks.map { "\($0.ok ? ($0.warn ? "!" : "✓") : "✗") \($0.name): \($0.detail)" }.joined(separator: "\n")
          + "\n\(failed == 0 ? "all checks pass" : "\(failed) check(s) failed")")
@@ -828,6 +860,7 @@ run {
     case "selftest-watcher": try cmdSelfTestWatcher()
     case "remote": try cmdRemote()
     case "approve": try cmdApprove()
+    case "pin": try cmdPin()
     case "uninstall": try cmdUninstall()
     case "version", "--version": print(version)
     case "", "help", "--help", "-h": print(usage)

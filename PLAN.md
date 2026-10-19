@@ -20,9 +20,13 @@ Out of scope, stated honestly:
 - Malware that can run zsp itself can use a cached session until it expires, the same
   trade-off aws-vault makes. `clear-sessions`, or a shorter `duration`, narrows that window.
 - Malware running as you can seal a key for *its own* AWS account under your profile's
-  name: sealing needs only the enclave's public key. Your commands would then run against
-  its account (uploads land in its bucket). **Test** / **Check in AWS** show the real
-  account. Planned: pin each key's account on first import and warn on a change.
+  name: sealing needs only the enclave's public key. Caught since 0.3.1 by account pinning:
+  the first session records the account and IAM ARN in the login Keychain (an item only
+  zsp can change without a prompt; a hash in the vault folder would just be recomputed),
+  and every new session is checked against it. The pin also holds the issued session's key
+  id, so a planted session is not served. `pin reset` (Touch ID) re-pins.
+- Malware running as you can rewrite `credential_process` in `~/.aws/config` to its own
+  program, bypassing zsp. `doctor` reports unwired profiles.
 - Malware running as you can rewrite the audit log and re-seal its anchor, because the
   anchor uses the no-prompt enclave key. The trail is a record, not evidence against an
   attacker on the Mac. Planned: an off-box copy (CloudWatch, or S3 with Object Lock).
@@ -87,8 +91,6 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
 - Roles: `source_profile` already works through credential_process; native AssumeRole
   caching could come later.
 - IAM Identity Center (SSO) profiles, to remove long-lived keys entirely.
-- Account pinning: record each key's AWS account at import, warn if a later session
-  belongs to a different one (catches a swapped key).
 - Off-box audit: ship each entry to CloudWatch Logs or S3 with Object Lock.
 - Developer ID signing and notarisation, for sharing beyond this Mac, and so the enclave
   keys can be restricted to this app (a keychain access group).

@@ -305,6 +305,7 @@ struct KeyCard: View {
                         if profile.mfaEnforced == true { Pill(text: "MFA enforced", symbol: "checkmark.shield.fill", color: Theme.violet) }
                         else if profile.mfaSerial != nil { Pill(text: "MFA", symbol: "lock.iphone", color: Theme.violet) }
                         if profile.remoteSerial != nil { Pill(text: "phone approval", symbol: "iphone", color: Theme.info) }
+                        if let a = profile.pinnedAccount { Pill(text: "pinned to \(a)", symbol: "pin.fill", color: Theme.accent) }
                     }
                     Text(usedLine).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     if let arn = profile.arn { Text(arn).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
@@ -526,6 +527,8 @@ struct AuditRow: View {
             "mfa.phone.created": "Phone MFA device created", "mfa.phone.cancelled": "Unused phone MFA device deleted",
             "session.away": "Nobody at the Mac: no session", "keys.migrated": "Keys migrated",
             "setup.done": "Setup", "profile.tested": "Profile tested", "watcher.tested": "Auto-move tested",
+            "pin.set": "Account pinned", "pin.reset": "Account pin reset",
+            "key.swapped": "Key to another account refused", "session.swapped": "Planted session refused",
         ][entry.event] ?? entry.event
     }
 
@@ -542,6 +545,8 @@ struct AuditRow: View {
         case "mfa.unenforced": return "shield.slash"
         case "mfa.removed": return "lock.open"
         case "session.away": return "moon.zzz.fill"
+        case "pin.set", "pin.reset": return "pin.fill"
+        case "key.swapped", "session.swapped": return "exclamationmark.octagon.fill"
         case "auth.denied", "session.failed", "key.rotate.failed": return "exclamationmark.triangle.fill"
         case "key.deleted", "key.forgotten": return "trash.fill"
         case "setup.done": return "wand.and.stars"
@@ -556,7 +561,8 @@ struct AuditRow: View {
         case "session.issued", "session.served": return Theme.safe
         case "key.rotated", "key.created": return Theme.accent
         case "mfa.setup", "mfa.enforced", "remote.enabled", "remote.disabled", "mfa.unenforced", "mfa.removed", "mfa.phone.created", "mfa.phone.cancelled": return Theme.violet
-        case "sessions.revoked", "key.deleted", "key.forgotten": return Theme.danger
+        case "sessions.revoked", "key.deleted", "key.forgotten", "key.swapped", "session.swapped": return Theme.danger
+        case "pin.set", "pin.reset": return Theme.accent
         default: return Theme.slate
         }
     }
