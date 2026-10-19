@@ -257,12 +257,46 @@ aws-cli-zsp uninstall [--restore-plaintext]
 
 ## Limits
 
-- Malware running as you can run aws-cli-zsp too. It gets a cached session without a prompt
-  until that session expires, the same trade-off aws-vault makes; `clear-sessions` or a
-  shorter `duration` narrows the window. It cannot get the long-lived key without your finger.
-- The enclave's public key is not secret, so a program running as you could seal a key of its
-  own in place of yours, and could rewrite the audit log and its anchor together. **Inspect**
-  shows the ARN a profile really belongs to.
+### What it protects against, and what it does not
+
+| Threat | Protected? |
+|---|---|
+| A stolen laptop, backup, or a copy of `~/.aws` or the vault folder | ✅ nothing in them works off this Mac's chip |
+| A script, package or tool that reads `~/.aws/credentials` | ✅ the file holds no keys |
+| A program that wants your long-lived key | ✅ only the Secure Enclave can unseal it, and only after Touch ID |
+| A key copied off the Mac some other way | ✅ with **MFA enforced**, AWS refuses it without a code |
+| Malware running as you, **while a session is cached** | ⚠️ it can use that session until it expires (1 hour by default) |
+| Malware running as you **swapping your key for its own** | ⚠️ not prevented: see below |
+| Malware running as you **rewriting the audit trail** | ⚠️ not prevented: see below |
+
+The last three come from one fact: malware running under your macOS user can do what you can
+do without Touch ID.
+
+- **It can use a cached session.** Reusing a session without asking is the point of a
+  session, so anything running as you gets one too, until it expires; the same trade-off
+  aws-vault makes. `clear-sessions`, a shorter `duration`, or **Revoke all sessions** narrow
+  the window. It never gets the long-lived key.
+- **It can replace your key with one of its own.** Sealing a key into the vault needs only
+  the Secure Enclave's *public* key, which is not secret (Touch ID is needed to open a key,
+  not to lock one). So malware cannot read your `bedrock` key, but it can store a key for
+  *its own* AWS account under the name `bedrock`. Your commands would then quietly run
+  against the attacker's account: `aws s3 cp backup.zip s3://…` would upload to their
+  bucket. **How to spot it:** **Test** or **Check in AWS** on the key shows the account and
+  ARN it really belongs to. If that is not your account, the key was swapped.
+- **It can rewrite the audit trail.** Each entry is hash-chained to the one before, and the
+  newest hash is sealed in the vault, so editing or deleting entries by hand is caught by
+  **Verify chain**. But that seal uses the no-prompt key (so sessions can be reused without
+  Touch ID), so malware running as you can rewrite the whole log *and* re-seal its anchor,
+  and Verify chain still says "intact". Treat the trail as a record of what happened, not
+  as evidence against an attacker on this Mac; AWS CloudTrail is the record it cannot touch.
+
+What would close these gaps (see PLAN.md): pinning each key's AWS account when it is first
+moved and warning if it changes; sending the audit trail off the Mac (CloudWatch, or S3
+with Object Lock); and signing with an Apple Developer ID so the enclave keys can be
+restricted to this app alone.
+
+### Other limits
+
 - Rotate, revoke and disable call IAM with the profile's own key, so the IAM user needs
   `iam:ListAccessKeys`, `iam:CreateAccessKey`, `iam:DeleteAccessKey`, `iam:UpdateAccessKey`,
   `iam:GetAccessKeyLastUsed` and `iam:PutUserPolicy` on itself.
