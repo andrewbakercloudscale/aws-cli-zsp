@@ -306,6 +306,8 @@ struct KeyCard: View {
                         else if profile.mfaSerial != nil { Pill(text: "MFA", symbol: "lock.iphone", color: Theme.violet) }
                         if profile.remoteSerial != nil { Pill(text: "phone approval", symbol: "iphone", color: Theme.info) }
                         if let a = profile.pinnedAccount { Pill(text: "pinned to \(a)", symbol: "pin.fill", color: Theme.accent) }
+                        if profile.readOnly { Pill(text: "read-only · client's key", symbol: "eye", color: Theme.slate) }
+                        else if IAMPermission.allCases.contains(where: profile.cannot) { Pill(text: "limited IAM", symbol: "eye", color: Theme.slate) }
                     }
                     Text(usedLine).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     if let arn = profile.arn { Text(arn).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
@@ -317,14 +319,18 @@ struct KeyCard: View {
                     .help("A real AWS call (GetCallerIdentity) with this profile: Touch ID if there is no session")
                 Button { model.perform(.inspect, on: profile.profile) } label: { Label("Check in AWS", systemImage: "magnifyingglass") }.buttonStyle(.pill(Theme.info))
                     .help("Who the key belongs to, and when AWS last saw each of its keys used")
-                Button { model.perform(.rotate, on: profile.profile) } label: { Label("Rotate", systemImage: "arrow.triangle.2.circlepath") }.buttonStyle(.pill(Theme.accent))
-                    .disabled(profile.temporary)
-                Button { model.perform(.revoke, on: profile.profile) } label: { Label("Revoke", systemImage: "xmark.shield") }.buttonStyle(.pill(Theme.danger))
-                    .disabled(profile.temporary)
+                if !profile.cannot(.keys) {
+                    Button { model.perform(.rotate, on: profile.profile) } label: { Label("Rotate", systemImage: "arrow.triangle.2.circlepath") }.buttonStyle(.pill(Theme.accent))
+                        .disabled(profile.temporary)
+                }
+                if !profile.cannot(.revoke) {
+                    Button { model.perform(.revoke, on: profile.profile) } label: { Label("Revoke", systemImage: "xmark.shield") }.buttonStyle(.pill(Theme.danger))
+                        .disabled(profile.temporary)
+                }
                 Spacer()
                 Menu {
-                    ForEach([Action.clearSession, .disable, .delete, .forget], id: \.self) { a in
-                        if a == .disable { Divider() }
+                    ForEach(menu, id: \.self) { a in
+                        if [.disable, .forget].contains(a) || (a == .markReadOnly || a == .markAuto) { Divider() }
                         Button { model.perform(a, on: profile.profile) } label: { Label(a.title, systemImage: a.symbol) }
                             .disabled(profile.temporary && [.disable, .delete].contains(a))
                     }
@@ -338,6 +344,13 @@ struct KeyCard: View {
             }
             if let r = model.inspect, r.profile == profile.profile { InspectView(report: r) }
         }
+    }
+
+    /// A client's key that IAM will not let change itself offers only what works.
+    var menu: [Action] {
+        let limited = IAMPermission.allCases.contains(where: profile.cannot)
+        return [.clearSession] + (profile.cannot(.keys) ? [] : [.disable, .delete]) + [.forget]
+            + (profile.temporary ? [] : [limited ? .markAuto : .markReadOnly])
     }
 
     var usedLine: String {
@@ -385,7 +398,22 @@ struct ProtectionView: View {
                 Text("Touch ID protects the key on this Mac, but AWS doesn't know about it. Three steps per key: this Mac becomes an MFA device (still one Touch ID), AWS refuses the key without MFA, and a code from your phone approves a session when you are away from the Mac, for example while driving Claude Code with Remote Control.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(model.profiles.filter { !$0.temporary }) { MFACard(profile: $0) }
+            ForEach(model.profiles.filter { !$0.temporary }) { p in
+                if p.cannot(.mfa) && p.mfaSerial == nil { ReadOnlyMFACard(profile: p) } else { MFACard(profile: p) }
+            }
+        }
+    }
+}
+
+/// A client's key whose IAM user may not add MFA devices: nothing to set up, and why.
+struct ReadOnlyMFACard: View {
+    let profile: ProfileMeta
+
+    var body: some View {
+        Card(title: profile.profile, symbol: "eye", tint: Theme.slate,
+             trailing: AnyView(Text(profile.access == .readOnly ? "read-only" : "IAM refuses").font(.callout.weight(.semibold)).foregroundStyle(.secondary))) {
+            Text("This IAM user is managed by its account's owner and may not add MFA devices, so AWS-side MFA is up to them. Touch ID still guards the key on this Mac, and sessions work as normal.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -527,6 +555,7 @@ struct AuditRow: View {
             "mfa.phone.created": "Phone MFA device created", "mfa.phone.cancelled": "Unused phone MFA device deleted",
             "session.away": "Nobody at the Mac: no session", "keys.migrated": "Keys migrated",
             "setup.done": "Setup", "profile.tested": "Profile tested", "watcher.tested": "Auto-move tested",
+            "access.denied": "IAM refused a change (client's key)", "access.set": "Access level set",
             "pin.set": "Account pinned", "pin.reset": "Account pin reset",
             "key.swapped": "Key to another account refused", "session.swapped": "Planted session refused",
         ][entry.event] ?? entry.event
@@ -546,6 +575,7 @@ struct AuditRow: View {
         case "mfa.removed": return "lock.open"
         case "session.away": return "moon.zzz.fill"
         case "pin.set", "pin.reset": return "pin.fill"
+        case "access.denied", "access.set": return "eye"
         case "key.swapped", "session.swapped": return "exclamationmark.octagon.fill"
         case "auth.denied", "session.failed", "key.rotate.failed": return "exclamationmark.triangle.fill"
         case "key.deleted", "key.forgotten": return "trash.fill"

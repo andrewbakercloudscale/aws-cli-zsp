@@ -96,9 +96,10 @@ for every client profile:
   extractable by anyone who takes the Pi: weaker, not stronger, for client keys.
 - GetSessionToken needs no IAM permission, so sessions work for read-only users.
 - Anything that writes to IAM needs permissions a read-only user lacks: rotate,
-  disable/delete key, revoke sessions, `mfa setup`/`enforce`/`add-phone`. For those
-  profiles zsp should detect AccessDenied and show "read-only: managed by the client"
-  rather than offer the buttons.
+  disable/delete key, revoke sessions, `mfa setup`/`enforce`/`add-phone`. Done in 0.3.2:
+  Check in AWS runs SimulatePrincipalPolicy (when allowed) and hides what is refused; an
+  AccessDenied is remembered and refused before Touch ID next time; `access` marks a key
+  read-only by hand.
 - What the Pi can still add for client profiles without holding secrets: an off-box
   copy of the audit trail.
 

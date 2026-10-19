@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.3.1"
+let version = "0.3.2"
 
 let usage = """
 aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
@@ -38,6 +38,9 @@ Rotate and revoke
   aws-cli-zsp disable-key --profile P          deactivate the key in AWS (re-enable in the IAM console)
   aws-cli-zsp delete-key --profile P           delete the key in AWS and on this Mac
   aws-cli-zsp forget --profile P               remove the key from this Mac only
+
+Client keys (read-only IAM users)
+  aws-cli-zsp access --profile P read-only|full|auto   hide or offer rotate, revoke and MFA (auto: what IAM allows)
 
 Account pinning (a key swapped for one to another account is refused)
   aws-cli-zsp pin show --profile P             the account and user the profile is pinned to
@@ -278,6 +281,8 @@ func cmdList() {
         if p.mfaSerial != nil { mfa += p.mfaEnforced == true ? " [MFA enforced]" : " [MFA]" }
         if let r = p.remoteSerial { mfa += " [remote: \(r.split(separator: "/").last ?? "")]" }
         if let a = p.pinnedAccount { mfa += " [pinned: \(a)]" }
+        if p.readOnly { mfa += " [read-only]" }
+        else if let d = p.iamDenied, !d.isEmpty, p.access == nil { mfa += " [IAM refuses: \(d.map(\.rawValue).joined(separator: ","))]" }
         lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(mfa)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
     }
     for f in findings { lines.append("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
@@ -519,6 +524,26 @@ func cmdRemote() throws {
     default:
         fail("usage: aws-cli-zsp remote enable|disable --profile P [--serial ARN]")
     }
+}
+
+func cmdAccess() throws {
+    let profile = requireProfile()
+    let word = opts.rest.first ?? ""
+    let level: AccessLevel?
+    switch word {
+    case "read-only", "readonly": level = .readOnly
+    case "full": level = .full
+    case "auto": level = nil
+    default: fail("usage: aws-cli-zsp access --profile P read-only|full|auto")
+    }
+    try makeVault().setAccess(profile, level)
+    let text: String
+    switch level {
+    case .readOnly?: text = "\(profile) is read-only: rotate, revoke and MFA are not offered; sessions work as normal"
+    case .full?: text = "\(profile): rotate, revoke and MFA are offered again"
+    case nil: text = "\(profile): offered again until IAM refuses (Check in AWS asks IAM first)"
+    }
+    done(["profile": profile, "access": level?.rawValue ?? "auto"], text)
 }
 
 func cmdPin() throws {
@@ -861,6 +886,7 @@ run {
     case "remote": try cmdRemote()
     case "approve": try cmdApprove()
     case "pin": try cmdPin()
+    case "access": try cmdAccess()
     case "uninstall": try cmdUninstall()
     case "version", "--version": print(version)
     case "", "help", "--help", "-h": print(usage)

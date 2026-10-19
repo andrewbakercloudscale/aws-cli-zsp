@@ -146,6 +146,25 @@ mint a new key, and **Revoke sessions** kills every one issued so far.
   the one before it, and the newest hash is sealed separately, so editing, deleting or
   truncating the file fails `aws-cli-zsp audit --verify`.
 
+## Client keys with read-only IAM users
+
+A key a client gives you often belongs to an IAM user that may read their account but not
+change itself. aws-cli-zsp needs nothing changed in the client's account:
+
+- **Sessions work as normal.** GetSessionToken needs no IAM permission, so every `aws`
+  command works, with Touch ID and the sealed vault as for any other key.
+- **What the user may not do is not offered.** Rotate, revoke, deactivate, delete and the
+  MFA steps all change IAM. **Check in AWS** asks IAM what the user may do (a policy
+  simulation, when the user is allowed to run one) and hides the rest. Without that, the
+  first refusal from AWS is remembered, and from then on the action is refused at once,
+  before any Touch ID.
+- The Keys card shows **read-only · client's key** (or **limited IAM** when only some
+  changes are refused), and the MFA & phone tab explains that AWS-side MFA is up to the
+  account's owner.
+- Mark a key by hand: ⋯ → **Mark read-only (client's key)**, or
+  `aws-cli-zsp access --profile P read-only`. `full` offers everything regardless;
+  `auto` forgets what was learned and asks IAM again.
+
 ## MFA, and approving from your phone
 
 Touch ID protects the key on this Mac, but AWS does not know about it: a copy of the key
@@ -246,6 +265,7 @@ aws-cli-zsp mfa confirm-phone --profile P --serial ARN CODE1 CODE2
 aws-cli-zsp mfa cancel-phone --profile P --serial ARN
 aws-cli-zsp remote enable [--serial ARN] | disable --profile P
 aws-cli-zsp approve --profile P CODE
+aws-cli-zsp access --profile P read-only|full|auto   a client's key: hide or offer IAM changes
 aws-cli-zsp pin show | reset --profile P      the AWS account and user the profile is pinned to
 aws-cli-zsp audit [--verify] [--limit N]
 aws-cli-zsp migrate                           move 0.1.x Keychain items into the vault
@@ -317,7 +337,8 @@ restricted to this app alone.
 
 - Rotate, revoke and disable call IAM with the profile's own key, so the IAM user needs
   `iam:ListAccessKeys`, `iam:CreateAccessKey`, `iam:DeleteAccessKey`, `iam:UpdateAccessKey`,
-  `iam:GetAccessKeyLastUsed` and `iam:PutUserPolicy` on itself.
+  `iam:GetAccessKeyLastUsed` and `iam:PutUserPolicy` on itself. Without them those actions
+  are hidden (see Client keys above); sessions do not need any of them.
 - Profiles with `mfa_serial` and `role_arn` (AssumeRole with MFA) are not handled by
   aws-cli-zsp yet; its own MFA covers the key's direct use. See PLAN.md.
 - Away detection is a heuristic: 5 minutes without input (`ZSP_AWAY_AFTER`) or a locked

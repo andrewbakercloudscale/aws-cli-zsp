@@ -15,6 +15,21 @@ final class FakeAWS: AWSService {
     var enabled: [(serial: String, code1: String, code2: String)] = []
     let mfaSeed = "JBSWY3DPEHPK3PXP"
     let phoneSeed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    /// IAM actions refused with AccessDenied, as for a client's read-only user.
+    var denied: Set<String> = []
+    var simulationRefused = false
+
+    func check(_ action: String) throws {
+        if denied.contains(action) { throw ZSPError.aws(code: "AccessDenied", message: "not authorized to perform: \(action)") }
+    }
+
+    func simulate(_ c: AWSCredentials, principal: String, actions: [String], resource: String,
+                  context: [String: String]) throws -> [String: Bool] {
+        calls.append("SimulatePrincipalPolicy \(principal)")
+        try check("iam:SimulatePrincipalPolicy")
+        if simulationRefused { throw ZSPError.aws(code: "AccessDenied", message: "no simulation") }
+        return Dictionary(uniqueKeysWithValues: actions.map { ($0, !denied.contains($0)) })
+    }
 
     func getSessionToken(_ c: AWSCredentials, durationSeconds: Int, mfa: MFACode?) throws -> AWSCredentials {
         calls.append("GetSessionToken \(c.accessKeyId) \(durationSeconds)\(mfa.map { " mfa=\($0.serial)" } ?? "")")
@@ -36,11 +51,13 @@ final class FakeAWS: AWSService {
 
     func listAccessKeys(_ c: AWSCredentials) throws -> [AccessKeyInfo] {
         calls.append("ListAccessKeys \(c.accessKeyId)")
+        try check("iam:ListAccessKeys")
         return keys
     }
 
     func createAccessKey(_ c: AWSCredentials) throws -> AWSCredentials {
         calls.append("CreateAccessKey \(c.accessKeyId)")
+        try check("iam:CreateAccessKey")
         let k = AWSCredentials(accessKeyId: "AKIANEWKEY000000001", secretAccessKey: "newsecretnewsecretnewsecretnewsecret1234")
         keys.append(AccessKeyInfo(accessKeyId: k.accessKeyId, status: "Active", createDate: Date()))
         return k
@@ -48,10 +65,12 @@ final class FakeAWS: AWSService {
 
     func updateAccessKey(_ c: AWSCredentials, keyId: String, active: Bool) throws {
         calls.append("UpdateAccessKey \(c.accessKeyId) \(keyId) \(active ? "Active" : "Inactive")")
+        try check("iam:UpdateAccessKey")
     }
 
     func deleteAccessKey(_ c: AWSCredentials, keyId: String) throws {
         calls.append("DeleteAccessKey \(c.accessKeyId) \(keyId)")
+        try check("iam:DeleteAccessKey")
         keys.removeAll { $0.accessKeyId == keyId }
     }
 
@@ -62,6 +81,7 @@ final class FakeAWS: AWSService {
 
     func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws {
         calls.append("PutUserPolicy \(userName) \(policyName)")
+        try check("iam:PutUserPolicy")
         policies.append((userName, policyName, document))
     }
 
@@ -72,6 +92,7 @@ final class FakeAWS: AWSService {
 
     func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String) {
         calls.append("CreateVirtualMFADevice \(name)")
+        try check("iam:CreateVirtualMFADevice")
         return name.contains("phone") ? ("arn:aws:iam::123456789012:mfa/\(name)", phoneSeed) : ("arn:aws:iam::123456789012:mfa/\(name)", mfaSeed)
     }
 

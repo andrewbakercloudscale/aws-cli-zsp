@@ -17,6 +17,9 @@ public protocol AWSService {
     func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws
     func deactivateMFADevice(_ c: AWSCredentials, userName: String, serial: String) throws
     func deleteUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws
+    /// SimulatePrincipalPolicy: whether each action is allowed on `resource`.
+    func simulate(_ c: AWSCredentials, principal: String, actions: [String], resource: String,
+                  context: [String: String]) throws -> [String: Bool]
 }
 
 public extension AWSService {
@@ -173,6 +176,25 @@ public final class AWSQueryService: AWSService {
 
     public func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws {
         _ = try call(Self.iam, "DeleteVirtualMFADevice", [("SerialNumber", serial)], c)
+    }
+
+    public func simulate(_ c: AWSCredentials, principal: String, actions: [String], resource: String,
+                         context: [String: String]) throws -> [String: Bool] {
+        var params = [("PolicySourceArn", principal), ("ResourceArns.member.1", resource)]
+        for (n, a) in actions.enumerated() { params.append(("ActionNames.member.\(n + 1)", a)) }
+        for (n, (k, v)) in context.sorted(by: { $0.key < $1.key }).enumerated() {
+            let e = "ContextEntries.member.\(n + 1)"
+            params += [("\(e).ContextKeyName", k), ("\(e).ContextKeyType", "string"), ("\(e).ContextKeyValues.member.1", v)]
+        }
+        let doc = try call(Self.iam, "SimulatePrincipalPolicy", params, c)
+        let members = (try? doc.nodes(forXPath: "//*[local-name()='EvaluationResults']/*[local-name()='member']")) ?? []
+        var out: [String: Bool] = [:]
+        for m in members {
+            guard let name = (try? m.nodes(forXPath: "./*[local-name()='EvalActionName']"))?.first?.stringValue,
+                  let decision = (try? m.nodes(forXPath: "./*[local-name()='EvalDecision']"))?.first?.stringValue else { continue }
+            out[name] = decision == "allowed"
+        }
+        return out
     }
 
     public func deactivateMFADevice(_ c: AWSCredentials, userName: String, serial: String) throws {

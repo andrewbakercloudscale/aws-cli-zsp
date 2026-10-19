@@ -25,6 +25,10 @@ public struct ProfileMeta: Codable, Equatable, Identifiable, Sendable {
     public var remoteSerial: String?
     /// For display only: the account in the Keychain pin, which is what is checked.
     public var pinnedAccount: String?
+    /// What IAM refused this key's user (learned, or from a policy simulation).
+    public var iamDenied: [IAMPermission]?
+    /// Set by hand: read-only (a client's key) or full. Nil: what IAM says.
+    public var access: AccessLevel?
     /// Not stored: whether the key is in the Keychain right now.
     public var inKeychain: Bool?
 

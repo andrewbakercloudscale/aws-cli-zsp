@@ -28,6 +28,8 @@ enum Action: CaseIterable {
     case mfaSetup, mfaEnforce, remoteEnable, remoteDisable
     /// Undoing them: enforcement alone, or everything including this Mac's MFA device.
     case mfaUnenforce, mfaRemove
+    /// A client's key: hide rotate, revoke and MFA, or offer them again.
+    case markReadOnly, markAuto
 
     /// What the ⋯ menu lists; the MFA steps have their own buttons on the row.
     static let keyMenu: [Action] = [.inspect, .clearSession, .rotate, .revoke, .disable, .delete, .forget]
@@ -47,6 +49,8 @@ enum Action: CaseIterable {
         case .remoteDisable: return "Turn off phone approval…"
         case .mfaUnenforce: return "Stop requiring MFA…"
         case .mfaRemove: return "Remove MFA…"
+        case .markReadOnly: return "Mark read-only (client's key)…"
+        case .markAuto: return "Offer IAM changes again"
         }
     }
 
@@ -65,13 +69,17 @@ enum Action: CaseIterable {
         case .remoteDisable: return "iphone.slash"
         case .mfaUnenforce: return "shield.slash"
         case .mfaRemove: return "lock.open"
+        case .markReadOnly: return "eye"
+        case .markAuto: return "arrow.uturn.backward"
         }
     }
 
     /// The explanation shown before anything happens: what it does, and what it breaks.
     func explain(_ p: String) -> String? {
         switch self {
-        case .inspect, .clearSession: return nil
+        case .inspect, .clearSession, .markAuto: return nil
+        case .markReadOnly:
+            return "For a key a client gave you with read-only IAM access: rotate, revoke, deactivate, delete and MFA are no longer offered for “\(p)”, so nothing fails after a Touch ID.\n\nSessions work exactly as before. Nothing changes in AWS. Undo from the same menu."
         case .rotate:
             return "Creates a new access key for the IAM user behind “\(p)”, seals it in the vault, waits until AWS accepts it, then deletes the old key.\n\nAnything else still using the old key (CI, another machine) stops working. Touch ID is asked first."
         case .revoke:
@@ -114,6 +122,8 @@ enum Action: CaseIterable {
         case .remoteDisable: return ["remote", "disable", "--profile", p]
         case .mfaUnenforce: return ["mfa", "unenforce", "--profile", p]
         case .mfaRemove: return ["mfa", "remove", "--profile", p, "--yes"]
+        case .markReadOnly: return ["access", "--profile", p, "read-only"]
+        case .markAuto: return ["access", "--profile", p, "auto"]
         }
     }
 }
