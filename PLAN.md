@@ -85,9 +85,22 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
 
 ## Next: no long-lived keys (IAM Roles Anywhere, CA on the Pi)
 
-Status: design, not started. Chosen over a Pi credential broker (the Pi holding every key)
-and over hashing or Developer ID tweaks, because it removes the long-lived key instead of
-guarding it better.
+Status: design, not started. **Scope: our own AWS accounts only.**
+
+**Constraint (decided):** we cannot ask clients to change their AWS accounts, and some give
+us read-only IAM users. So for client accounts the long-lived key is theirs to issue and
+cannot be removed, only guarded. That is what key mode already does, and it stays the mode
+for every client profile:
+- The key is sealed by the Mac's Secure Enclave and every new session needs Touch ID.
+  The Pi has no secure enclave, so moving client keys there (a broker) would make them
+  extractable by anyone who takes the Pi: weaker, not stronger, for client keys.
+- GetSessionToken needs no IAM permission, so sessions work for read-only users.
+- Anything that writes to IAM needs permissions a read-only user lacks: rotate,
+  disable/delete key, revoke sessions, `mfa setup`/`enforce`/`add-phone`. For those
+  profiles zsp should detect AccessDenied and show "read-only: managed by the client"
+  rather than offer the buttons.
+- What the Pi can still add for client profiles without holding secrets: an off-box
+  copy of the audit trail.
 
 ### Goal
 
@@ -104,19 +117,15 @@ on this Mac. Touch ID still approves every new session, as today.
 | Device key | Mac, Secure Enclave, P-256, Touch ID required | Signs Roles Anywhere `CreateSession`. Never leaves the chip |
 | Remote key | Mac, Secure Enclave, P-256, no Touch ID | For approval while away (below). Useless without a fresh certificate |
 | Hub account | One AWS account of ours | The only account with Roles Anywhere set up |
-| Client roles | Each client account | One role per profile, trusting the hub role |
+| Account roles | Each of our own accounts | One role per profile, trusting the hub role |
 
 ### Changes in AWS accounts
 
 - **Hub account (ours):** a trust anchor (the root CA certificate), a Roles Anywhere
   profile, and one role per use, trusted by `rolesanywhere.amazonaws.com` with conditions
   on the certificate subject. Free with our own CA (AWS Private CA would be ~$400/month).
-- **Client accounts:** *no Roles Anywhere, no CA.* Only an ordinary cross-account role
-  trusting the hub role, with an `sts:ExternalId`. That is the pattern clients already
-  accept for vendors, it is one CloudFormation stack or Terraform module, and the client
-  can delete it at any time to cut access.
-- **Today, for comparison:** clients issue an IAM user and a long-lived key, and
-  `mfa enforce` attaches an inline policy to that user. Both go away.
+- **Other accounts of ours:** a cross-account role trusting the hub role.
+- **Client accounts:** none. They stay on key mode (above).
 
 ### Flows
 
@@ -140,7 +149,6 @@ on this Mac. Touch ID still approves every new session, as today.
 - The Pi compromised: delete or disable the trust anchor in the hub account. Every
   certificate stops working at once; client accounts need no change. Re-issue the
   intermediate from the offline root.
-- A client: deletes its role.
 - Break-glass: console sign-in with MFA in the hub account, kept outside zsp.
 
 ### What it fixes, what it does not
@@ -163,7 +171,7 @@ on this Mac. Touch ID still approves every new session, as today.
    Its own container; no inbound ports beyond the tunnel.
 3. zsp: per-profile mode (`key` as today, or `roles-anywhere`), enrol, renew, and the
    remote flow. Key mode stays as the fallback during migration.
-4. A CloudFormation template for client accounts (the cross-account role), and a
+4. A CloudFormation template for our other accounts (the cross-account role), and a
    setup command for the hub.
 5. Migrate one profile (`bedrock`), then the rest; delete the IAM user keys last.
 
@@ -172,7 +180,8 @@ on this Mac. Touch ID still approves every new session, as today.
 - Which account is the hub.
 - Where the offline root CA key lives.
 - Certificate lifetimes (7 days device, 15 minutes remote are proposals).
-- Whether clients that refuse an external trust relationship stay on key mode.
+- Whether it is worth it: it only helps our own accounts. If most profiles are client
+  keys, the read-only handling and off-box audit above matter more.
 
 ## Later
 
