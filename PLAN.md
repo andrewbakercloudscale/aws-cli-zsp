@@ -135,7 +135,7 @@ on this Mac. Touch ID still approves every new session, as today.
   the old certificate is still valid.
 - **A command at the Mac:** credential_process → Touch ID → the device key signs
   `CreateSession` (SigV4 X.509, `AWS4-X509-ECDSA-SHA256`) → a 1-hour hub session →
-  `AssumeRole` into the client role → cached session. The Pi is not involved, so the Pi
+  `AssumeRole` into the account's role → cached session. The Pi is not involved, so the Pi
   being down does not stop work until the certificate expires.
 - **Approval while away (Claude Code Remote Control):** zsp asks the Pi; you get a
   passkey prompt on your phone; on approval the Pi signs a **15-minute** certificate for
@@ -147,7 +147,7 @@ on this Mac. Touch ID still approves every new session, as today.
 
 - One Mac: stop renewing its certificate (7 days at most), or import a CRL into the hub.
 - The Pi compromised: delete or disable the trust anchor in the hub account. Every
-  certificate stops working at once; client accounts need no change. Re-issue the
+  certificate stops working at once; the other accounts need no change. Re-issue the
   intermediate from the offline root.
 - Break-glass: console sign-in with MFA in the hub account, kept outside zsp.
 
