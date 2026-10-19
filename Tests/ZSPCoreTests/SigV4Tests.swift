@@ -40,7 +40,7 @@ final class SigV4Tests: XCTestCase {
         let s = try svc.getSessionToken(AWSCredentials(accessKeyId: "AKIA1", secretAccessKey: "s"), durationSeconds: 900)
         XCTAssertEqual(s, AWSCredentials(accessKeyId: "ASIAX", secretAccessKey: "SECRET", sessionToken: "TOKEN",
                                          expiration: parseISO8601("2026-10-19T12:00:00Z")))
-        XCTAssertEqual(seen?.url?.host, "sts.amazonaws.com")
+        XCTAssertEqual(seen?.url?.host, "sts.us-east-1.amazonaws.com")
         XCTAssertEqual(String(data: seen!.httpBody!, encoding: .utf8), "Action=GetSessionToken&Version=2011-06-15&DurationSeconds=900")
         XCTAssertTrue(seen!.value(forHTTPHeaderField: "Authorization")!.hasPrefix("AWS4-HMAC-SHA256 Credential=AKIA1/"))
     }

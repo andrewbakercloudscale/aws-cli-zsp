@@ -44,13 +44,13 @@ enum Action: CaseIterable {
         switch self {
         case .inspect, .clearSession: return nil
         case .rotate:
-            return "Creates a new access key for the IAM user behind “\(p)”, stores it in the Keychain, waits until AWS accepts it, then deletes the old key.\n\nAnything else still using the old key (CI, another machine) stops working. Touch ID is asked first."
+            return "Creates a new access key for the IAM user behind “\(p)”, seals it in the vault, waits until AWS accepts it, then deletes the old key.\n\nAnything else still using the old key (CI, another machine) stops working. Touch ID is asked first."
         case .revoke:
             return "Attaches a deny-all policy to the IAM user that applies to every session token issued before now, on every machine, including any minted from a leaked key.\n\nThe key itself keeps working and your next command gets a fresh session. Touch ID is asked first."
         case .disable:
-            return "Marks the key Inactive in AWS. Everything using it stops at once.\n\nzsp cannot turn it back on, because the key was its only way in: re-enable it in the IAM console."
+            return "Marks the key Inactive in AWS. Everything using it stops at once.\n\nAWS CLI: ZSP cannot turn it back on, because the key was its only way in: re-enable it in the IAM console."
         case .delete:
-            return "Deletes the key in AWS, then removes it from the Keychain and from ~/.aws/config.\n\nThis cannot be undone."
+            return "Deletes the key in AWS, then removes it from the vault and from ~/.aws/config.\n\nThis cannot be undone."
         case .forget:
             return "Removes the key from this Mac only. AWS still has it and it keeps working wherever else it is used.\n\nIf this was your only copy of the secret, it is gone for good."
         }
@@ -88,9 +88,12 @@ final class Model: ObservableObject {
     private var lastSeq = 0
     private let canNotify = Bundle.main.bundleIdentifier != nil
 
-    /// zsp sits beside this binary in the bundle; it is the only thing that reads the Keychain.
+    /// The CLI is a helper app inside this bundle, so macOS names it "AWS CLI: ZSP" in Touch ID
+    /// and Keychain dialogs. It is the only thing that opens the vault.
     var cliPath: String {
-        Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("zsp").path
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aws-cli-zsp.app/Contents/MacOS/aws-cli-zsp")
+        if FileManager.default.isExecutableFile(atPath: helper.path) { return helper.path }
+        return Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("zsp").path   // swift run
     }
 
     var statusSymbol: String {
@@ -114,7 +117,7 @@ final class Model: ObservableObject {
         let entries = AuditLog(paths: paths, anchor: nil).entries(limit: 300)
         if !initial {
             for e in entries where e.seq > lastSeq {
-                if e.event == "key.imported" { notify("Moved an AWS key into the Keychain", "Profile “\(e.profile ?? "?")” no longer has a plaintext key in \(e.detail["from"] ?? "~/.aws").") }
+                if e.event == "key.imported" { notify("Moved an AWS key into the vault", "Profile “\(e.profile ?? "?")” no longer has a plaintext key in \(e.detail["from"] ?? "~/.aws").") }
                 if e.event == "auth.denied" { notify("AWS key use declined", "\(e.requester ?? "Something") asked for “\(e.profile ?? "?")”.") }
             }
         }
@@ -147,7 +150,7 @@ final class Model: ObservableObject {
         p.standardOutput = out
         p.standardError = err
         p.standardInput = FileHandle.nullDevice
-        do { try p.run() } catch { return (127, Data(), "cannot run zsp: \(error.localizedDescription)") }
+        do { try p.run() } catch { return (127, Data(), "cannot run aws-cli-zsp: \(error.localizedDescription)") }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         let e = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         p.waitUntilExit()
@@ -181,7 +184,7 @@ final class Model: ObservableObject {
                 if let env, env.ok {
                     if let text = then(env.result) { self.banner = Banner(text: text, isError: false) }
                 } else {
-                    let why = env?.error ?? (r.err.isEmpty ? "zsp exited with \(r.status)" : r.err)
+                    let why = env?.error ?? (r.err.isEmpty ? "aws-cli-zsp exited with \(r.status)" : r.err)
                     self.banner = Banner(text: why.trimmingCharacters(in: .whitespacesAndNewlines), isError: true)
                 }
                 self.refresh()
@@ -202,7 +205,7 @@ final class Model: ObservableObject {
     func importNow() {
         call(["import"], label: "Moving keys…", as: ImportReport.self) { r in
             guard let r else { return nil }
-            return r.imported.isEmpty ? "No complete key pairs to move yet." : "Moved \(r.imported.joined(separator: ", ")) into the Keychain."
+            return r.imported.isEmpty ? "No complete key pairs to move yet." : "Moved \(r.imported.joined(separator: ", ")) into the vault."
         }
     }
 

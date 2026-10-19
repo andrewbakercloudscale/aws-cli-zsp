@@ -87,7 +87,7 @@ public final class Vault {
     }
 
     func isOurs(_ credentialProcess: String) -> Bool {
-        credentialProcess.contains(" credential-process --profile ") && credentialProcess.contains("zsp")
+        credentialProcess.contains(" credential-process --profile ") && credentialProcess.lowercased().contains("zsp")
     }
 
     // MARK: Moving keys in
@@ -117,8 +117,8 @@ public final class Vault {
             if creds.text != credsText {
                 if !creds.text.contains(AWSFiles.managedMarker) {
                     creds.prepend(comments: [
-                        "\(AWSFiles.managedMarker): access keys written here are moved to the macOS Keychain within seconds.",
-                        "# Add keys with `zsp add --profile NAME` (or keep using `aws configure`); see `zsp list`.",
+                        "\(AWSFiles.managedMarker): access keys written here are moved into the Secure Enclave vault within seconds.",
+                        "# Add keys with `aws-cli-zsp add --profile NAME` (or keep using `aws configure`); see `aws-cli-zsp list`.",
                     ])
                 }
                 try writeAtomically(creds.text, to: paths.credentialsFile)
@@ -180,19 +180,23 @@ public final class Vault {
     }
 
     func writeMaster(_ key: MasterKey, _ profile: String) throws {
-        let data = try ZSPJSON.encoder.encode(key)
-        try store.write(.master, profile, data)
-        guard try store.read(.master, profile) == data else {
-            throw ZSPError.keychain(0, "the key for \(profile) did not read back from the Keychain; left the file alone")
-        }
+        // The store confirms the write itself (the enclave store reads its sealed file back):
+        // decrypting it here would cost a Touch ID prompt for every key moved in.
+        try store.write(.master, profile, try ZSPJSON.encoder.encode(key))
+    }
+
+    /// Stores a key exactly as an older store held it (the migration from 0.1.x).
+    public func storeMaster(raw: Data, profile: String) throws {
+        _ = try ZSPJSON.decoder.decode(MasterKey.self, from: raw)
+        try store.write(.master, profile, raw)
     }
 
     /// Adds a key typed at the prompt, so it never touches a file at all.
     public func add(profile: String, accessKeyId: String, secretAccessKey: String, sessionToken: String? = nil) throws {
         try withFileLock(paths.lock("import")) {
             try adopt(MasterKey(accessKeyId: accessKeyId, secretAccessKey: secretAccessKey, sessionToken: sessionToken,
-                                importedAt: now(), source: "zsp add"),
-                      profile: profile, event: "key.added", origin: "zsp add")
+                                importedAt: now(), source: "aws-cli-zsp add"),
+                      profile: profile, event: "key.added", origin: "aws-cli-zsp add")
             let text = (try? String(contentsOf: paths.configFile, encoding: .utf8)) ?? ""
             var config = INIDocument(text)
             config.set("credential_process", credentialProcess(for: profile), in: AWSFiles.configSection(for: profile))
@@ -248,7 +252,7 @@ public final class Vault {
     /// The long-lived key, after the person at the Mac has approved `reason`.
     func unlock(_ profile: String, reason: String, requester: String? = nil) throws -> MasterKey {
         guard try store.accounts(.master).contains(profile) else {
-            throw ZSPError.notFound("No key for profile “\(profile)” in the Keychain. Add one with: zsp add --profile \(profile)")
+            throw ZSPError.notFound("No key for profile “\(profile)” in the vault. Add one with: aws-cli-zsp add --profile \(profile)")
         }
         do {
             try auth.confirm(reason)
@@ -256,9 +260,14 @@ public final class Vault {
             _ = try? audit.append("auth.denied", profile: profile, ok: false, detail: ["for": reason], requester: requester)
             throw error
         }
-        guard let data = try store.read(.master, profile) else {
-            throw ZSPError.notFound("The key for “\(profile)” vanished from the Keychain")
+        let data: Data?
+        do {
+            data = try store.read(.master, profile)
+        } catch {
+            _ = try? audit.append("auth.denied", profile: profile, ok: false, detail: ["for": reason], requester: requester)
+            throw error
         }
+        guard let data else { throw ZSPError.notFound("The key for “\(profile)” vanished from the Keychain") }
         return try ZSPJSON.decoder.decode(MasterKey.self, from: data)
     }
 
@@ -425,6 +434,21 @@ public final class Vault {
         try store.delete(.session, profile)
         try meta.update(profile) { $0 = nil }
         try unwireConfig(profile)
+    }
+
+    /// Points every profile in the Keychain at this binary, and refreshes the hint at the top of
+    /// the credentials file. For when the binary moves (a rename, a new install location).
+    public func rewire() throws -> [String] {
+        let profiles = Set(try store.accounts(.master)).union(meta.all().keys).sorted()
+        let text = (try? String(contentsOf: paths.configFile, encoding: .utf8)) ?? ""
+        var config = INIDocument(text)
+        for p in profiles { config.set("credential_process", credentialProcess(for: p), in: AWSFiles.configSection(for: p)) }
+        if config.text != text { try writeAtomically(config.text, to: paths.configFile) }
+        if let creds = try? String(contentsOf: paths.credentialsFile, encoding: .utf8), creds.contains("`zsp add") {
+            try writeAtomically(creds.replacingOccurrences(of: "`zsp add", with: "`aws-cli-zsp add")
+                .replacingOccurrences(of: "`zsp list`", with: "`aws-cli-zsp list`"), to: paths.credentialsFile)
+        }
+        return profiles
     }
 
     func unwireConfig(_ profile: String) throws {

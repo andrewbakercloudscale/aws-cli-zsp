@@ -22,7 +22,10 @@ public final class AWSQueryService: AWSService {
         let version: String
     }
 
-    static let sts = Endpoint(host: "sts.amazonaws.com", service: "sts", version: "2011-06-15")
+    // Regional, not sts.amazonaws.com: the global endpoint issues v1 session tokens, which
+    // opt-in regions such as af-south-1 reject with InvalidClientTokenId. Regional tokens
+    // work in every region.
+    static let sts = Endpoint(host: "sts.us-east-1.amazonaws.com", service: "sts", version: "2011-06-15")
     static let iam = Endpoint(host: "iam.amazonaws.com", service: "iam", version: "2010-05-08")
 
     let transport: Transport

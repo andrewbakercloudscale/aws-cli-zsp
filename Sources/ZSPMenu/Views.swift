@@ -29,7 +29,7 @@ struct ContentView: View {
             }
             Divider()
             HStack {
-                Text("aws-cli-zsp").font(.caption).foregroundStyle(.secondary)
+                Text("AWS CLI: ZSP").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless).font(.caption)
             }
@@ -61,7 +61,7 @@ struct Header: View {
 
     var summary: String {
         let active = model.profiles.filter { $0.sessionActive() }.count
-        return "\(model.profiles.count) key\(model.profiles.count == 1 ? "" : "s") in the Keychain · \(active) active session\(active == 1 ? "" : "s")"
+        return "\(model.profiles.count) key\(model.profiles.count == 1 ? "" : "s") in the vault · \(active) active session\(active == 1 ? "" : "s")"
     }
 }
 
@@ -77,7 +77,7 @@ struct PlaintextWarning: View {
             HStack {
                 Text("The watcher moves these within seconds. If they stay, move them now:").font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Button("Move to Keychain") { model.importNow() }.controlSize(.small)
+                Button("Move to vault") { model.importNow() }.controlSize(.small)
             }
         }
         .padding(8)
@@ -90,7 +90,7 @@ struct ProfilesView: View {
 
     var body: some View {
         if model.profiles.isEmpty {
-            Text("No keys yet. Run `zsp add --profile NAME`, or `aws configure`: the key is moved here automatically.")
+            Text("No keys yet. Run `aws-cli-zsp add --profile NAME`, or `aws configure`: the key is moved here automatically.")
                 .font(.caption).foregroundStyle(.secondary).padding(.vertical, 20)
         } else {
             ScrollView {
@@ -179,7 +179,7 @@ struct AuditView: View {
             .frame(height: 340)
             HStack {
                 Button("Verify chain") { model.verify() }.controlSize(.small)
-                    .help("Recompute every entry's hash and compare the newest with the copy in the Keychain")
+                    .help("Recompute every entry's hash and compare the newest with the sealed copy in the vault")
                 Button("Show log file") { model.revealLog() }.controlSize(.small)
                 Spacer()
             }
@@ -228,7 +228,7 @@ struct AuditRow: View {
 
     var title: String {
         [
-            "key.imported": "Key moved into the Keychain", "key.added": "Key added", "key.created": "New key created",
+            "key.imported": "Key moved into the vault", "key.added": "Key added", "key.created": "New key created",
             "key.rotated": "Key rotated", "key.rotate.failed": "Rotation incomplete", "key.disabled": "Key deactivated",
             "key.deleted": "Key deleted", "key.forgotten": "Key removed from this Mac", "key.inspected": "Checked in AWS",
             "key.restored": "Key written back to file", "session.issued": "Session issued (Touch ID)",

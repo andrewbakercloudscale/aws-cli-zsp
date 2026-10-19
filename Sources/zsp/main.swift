@@ -2,35 +2,37 @@ import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.1.0"
+let version = "0.2.0"
 
 let usage = """
-zsp \(version): AWS keys in the macOS Keychain, Touch ID to use them, never in ~/.aws in plain text.
+aws-cli-zsp \(version) (AWS CLI: ZSP): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
 
 Keys
-  zsp import [--auto]              move every key in ~/.aws/credentials and ~/.aws/config into the Keychain
-  zsp scan                         list plaintext keys without moving them (exit 1 if any)
-  zsp add --profile P              type a key in (secret not echoed); it never touches a file
-  zsp list                         profiles, keys, sessions, last use
-  zsp inspect --profile P          who the key belongs to and when AWS last saw each key used
+  aws-cli-zsp import [--auto]              move every key in ~/.aws/credentials and ~/.aws/config into the vault
+  aws-cli-zsp scan                         list plaintext keys without moving them (exit 1 if any)
+  aws-cli-zsp add --profile P              type a key in (secret not echoed); it never touches a file
+  aws-cli-zsp list                         profiles, keys, sessions, last use
+  aws-cli-zsp inspect --profile P          who the key belongs to and when AWS last saw each key used
 
 Using them
-  zsp credential-process --profile P   what ~/.aws/config calls; prints a short-lived session
-  zsp exec --profile P -- CMD...       run CMD with a session in its environment
-  zsp duration [--profile P] 1h        session length (15m to 12h, default 1h)
+  aws-cli-zsp credential-process --profile P   what ~/.aws/config calls; prints a short-lived session
+  aws-cli-zsp exec --profile P -- CMD...       run CMD with a session in its environment
+  aws-cli-zsp duration [--profile P] 1h        session length (15m to 12h, default 1h)
 
 Rotate and revoke
-  zsp rotate --profile P [--keep-old]  new key, verified, old one deleted (or deactivated)
-  zsp revoke-sessions --profile P      invalidate every session issued so far, in AWS
-  zsp clear-sessions [--profile P]     drop cached sessions on this Mac
-  zsp disable-key --profile P          deactivate the key in AWS (re-enable in the IAM console)
-  zsp delete-key --profile P           delete the key in AWS and on this Mac
-  zsp forget --profile P               remove the key from this Mac only
+  aws-cli-zsp rotate --profile P [--keep-old]  new key, verified, old one deleted (or deactivated)
+  aws-cli-zsp revoke-sessions --profile P      invalidate every session issued so far, in AWS
+  aws-cli-zsp clear-sessions [--profile P]     drop cached sessions on this Mac
+  aws-cli-zsp disable-key --profile P          deactivate the key in AWS (re-enable in the IAM console)
+  aws-cli-zsp delete-key --profile P           delete the key in AWS and on this Mac
+  aws-cli-zsp forget --profile P               remove the key from this Mac only
 
 Audit and setup
-  zsp audit [--limit N] [--verify]     the hash-chained audit trail
-  zsp install                          watcher, menu bar app at login, ~/.local/bin/zsp, first import
-  zsp uninstall [--restore-plaintext]  remove the agents; optionally put the keys back in the file
+  aws-cli-zsp audit [--limit N] [--verify]     the hash-chained audit trail
+  aws-cli-zsp migrate                          move keys stored by 0.1.x into the Secure Enclave vault
+  aws-cli-zsp check-touch-id                   show a Touch ID prompt and nothing else
+  aws-cli-zsp install                          watcher, menu bar app at login, ~/.local/bin/aws-cli-zsp, first import
+  aws-cli-zsp uninstall [--restore-plaintext]  remove the agents; optionally put the keys back in the file
 
   --json for machine output, --yes to skip confirmations.
 """
@@ -101,7 +103,7 @@ func done<T: Encodable>(_ result: T, _ text: String) {
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
     if opts.json { printJSON(Envelope<String>(ok: false, result: nil, error: message)) } else {
-        FileHandle.standardError.write(Data("zsp: \(message)\n".utf8))
+        FileHandle.standardError.write(Data("aws-cli-zsp: \(message)\n".utf8))
     }
     exit(code)
 }
@@ -143,9 +145,11 @@ func selfPath() -> String {
 let paths = Paths.standard()
 
 func makeVault() -> Vault {
-    // ZSP_KEYCHAIN_PREFIX keeps a sandbox's items apart from the real ones; it grants nothing.
-    let store = ProcessInfo.processInfo.environment["ZSP_KEYCHAIN_PREFIX"].map { KeychainStore(prefix: $0) } ?? KeychainStore()
-    return Vault(paths: paths, store: store, auth: DeviceOwnerPresence(), aws: AWSQueryService(), commandPath: selfPath())
+    // Sealed to the Secure Enclave under ZSP_HOME, so a sandbox (another ZSP_HOME) is separate.
+    let store = EnclaveStore(dir: paths.supportDir.appendingPathComponent("vault"))
+    let presence = DeviceOwnerPresence(enclaveGated: true)
+    store.context = { presence.context }
+    return Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
 }
 
 func run(_ body: () throws -> Void) {
@@ -156,9 +160,9 @@ func run(_ body: () throws -> Void) {
 
 func cmdImport() throws {
     let auto = opts.flags.contains("--auto")
-    let report = try makeVault().importPlaintext(origin: auto ? "watcher" : "zsp import")
+    let report = try makeVault().importPlaintext(origin: auto ? "watcher" : "aws-cli-zsp import")
     var lines: [String] = []
-    for p in report.imported { lines.append("moved \(p) to the Keychain\(report.replaced.contains(p) ? " (replaced its previous key)" : "")") }
+    for p in report.imported { lines.append("moved \(p) into the vault\(report.replaced.contains(p) ? " (replaced its previous key)" : "")") }
     for f in report.incomplete { lines.append("waiting: \(f.profile) in \(f.file) has only half a key pair") }
     if auto && lines.isEmpty { return }
     if auto { lines = lines.map { "\(clock(Date())) \($0)" } }
@@ -173,7 +177,7 @@ func cmdScan() {
     }
     if findings.isEmpty { print("no plaintext keys in \(paths.credentialsFile.path) or \(paths.configFile.path)"); exit(0) }
     for f in findings { print("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
-    print("run `zsp import` to move them into the Keychain")
+    print("run `aws-cli-zsp import` to move them into the vault")
     exit(1)
 }
 
@@ -183,7 +187,7 @@ func readKeyId(given: String?, tty: Bool) -> String {
     return (readLine() ?? "").trimmingCharacters(in: .whitespaces)
 }
 
-/// The secret, without echo at a terminal; one line of stdin otherwise (`pbpaste | zsp add`).
+/// The secret, without echo at a terminal; one line of stdin otherwise (`pbpaste | aws-cli-zsp add`).
 func readSecret(tty: Bool) -> String {
     guard tty else { return (readLine() ?? "").trimmingCharacters(in: .whitespaces) }
     var buf = [CChar](repeating: 0, count: 256)
@@ -200,7 +204,7 @@ func cmdAdd() throws {
     let secret = readSecret(tty: tty)
     if keyId.count < 16 || secret.isEmpty { fail("an access key id and a secret are both needed") }
     try makeVault().add(profile: profile, accessKeyId: keyId, secretAccessKey: secret)
-    let message = "stored \(maskKeyId(keyId)) for \(profile) in the Keychain; `aws --profile \(profile) ...` now asks for Touch ID"
+    let message = "stored \(maskKeyId(keyId)) for \(profile) in the vault; `aws --profile \(profile) ...` now asks for Touch ID"
     done(["profile": profile, "accessKeyId": keyId], message)
 }
 
@@ -209,11 +213,11 @@ func cmdList() {
     let findings = Scanner.scan(paths)
     struct ListResult: Encodable { let profiles: [ProfileMeta]; let plaintext: [Finding] }
     var lines: [String] = []
-    if profiles.isEmpty { lines.append("no keys in the Keychain yet: run `zsp import` or `zsp add --profile NAME`") }
+    if profiles.isEmpty { lines.append("no keys in the vault yet: run `aws-cli-zsp import` or `aws-cli-zsp add --profile NAME`") }
     for p in profiles {
         let session = p.sessionActive() ? "session until \(clock(p.sessionExpiresAt!))" : "no session"
         let status = p.keyStatus.map { " [\($0)]" } ?? ""
-        let missing = p.inKeychain == false ? " (MISSING from Keychain)" : ""
+        let missing = p.inKeychain == false ? " (NOT in the vault: run aws-cli-zsp migrate)" : ""
         lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
     }
     for f in findings { lines.append("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
@@ -231,14 +235,14 @@ func cmdCredentialProcess() {
         FileHandle.standardOutput.write(data)
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("zsp: \(error.localizedDescription)\n".utf8))
+        FileHandle.standardError.write(Data("aws-cli-zsp: \(error.localizedDescription)\n".utf8))
         exit(1)
     }
 }
 
 func cmdExec() throws {
     let profile = requireProfile()
-    guard !opts.rest.isEmpty else { fail("nothing to run: zsp exec --profile \(profile) -- aws s3 ls") }
+    guard !opts.rest.isEmpty else { fail("nothing to run: aws-cli-zsp exec --profile \(profile) -- aws s3 ls") }
     let c = try makeVault().credentials(for: profile, requester: Requester.describe(pid: getpid()))
     setenv("AWS_ACCESS_KEY_ID", c.accessKeyId, 1)
     setenv("AWS_SECRET_ACCESS_KEY", c.secretAccessKey, 1)
@@ -272,7 +276,7 @@ func cmdRotate() throws {
     let keep = opts.flags.contains("--keep-old")
     confirm("Create a new key for \(profile) and \(keep ? "deactivate" : "delete") the current one in AWS?")
     let r = try makeVault().rotate(profile, keepOld: keep)
-    done(r, "rotated \(profile): \(maskKeyId(r.oldKeyId)) \(r.oldKey), \(maskKeyId(r.newKeyId)) is now in the Keychain")
+    done(r, "rotated \(profile): \(maskKeyId(r.oldKeyId)) \(r.oldKey), \(maskKeyId(r.newKeyId)) is now in the vault")
 }
 
 func cmdRevokeSessions() throws {
@@ -285,7 +289,7 @@ func cmdRevokeSessions() throws {
 
 func cmdDisable() throws {
     let profile = requireProfile()
-    confirm("Deactivate the AWS key for \(profile)? zsp cannot reactivate it: that needs the IAM console.")
+    confirm("Deactivate the AWS key for \(profile)? AWS CLI: ZSP cannot reactivate it: that needs the IAM console.")
     try makeVault().disableKey(profile)
     done(["profile": profile], "deactivated the key for \(profile) in AWS")
 }
@@ -325,7 +329,7 @@ func cmdAudit() {
         let v = log.verify()
         if opts.json { printJSON(Envelope(ok: v.intact, result: v, error: v.problem)); exit(v.intact ? 0 : 1) }
         if v.intact {
-            print("audit trail intact: \(v.entries) entries\(v.anchored == true ? ", newest matches the Keychain anchor" : "")")
+            print("audit trail intact: \(v.entries) entries\(v.anchored == true ? ", newest matches the sealed anchor" : "")")
             exit(0)
         }
         fail("audit trail BROKEN after \(v.entries) good entries: \(v.problem ?? "?")")
@@ -335,6 +339,40 @@ func cmdAudit() {
         let detail = e.detail.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
         return "\(e.date.map(clock) ?? e.ts)  \(e.ok ? " " : "!")\(e.event)  \(e.profile ?? "-")  \(detail)\(e.requester.map { "  ← \($0)" } ?? "")"
     }.joined(separator: "\n"))
+}
+
+/// Moves keys stored by 0.1.x (plain login-Keychain items) into the Secure Enclave vault.
+/// Those items are bound to the exact build that made them, so macOS asks for your login
+/// password once per key: this is the last time it does.
+func cmdMigrate() throws {
+    let legacy = KeychainStore(prefix: ProcessInfo.processInfo.environment["ZSP_KEYCHAIN_PREFIX"] ?? "consulting.cloudscale.zsp")
+    let vault = makeVault()
+    var moved: [String] = []
+    var failed: [String: String] = [:]
+    for p in try legacy.accounts(.master) {
+        do {
+            guard let data = try legacy.read(.master, p) else { continue }
+            try vault.storeMaster(raw: data, profile: p)
+            try legacy.delete(.master, p)
+            moved.append(p)
+        } catch {
+            failed[p] = error.localizedDescription
+        }
+    }
+    for p in (try? legacy.accounts(.session)) ?? [] { try? legacy.delete(.session, p) }
+    try? legacy.delete(.auditHead, "head")
+    if !moved.isEmpty || !failed.isEmpty {
+        try vault.audit.append("keys.migrated", ok: failed.isEmpty, detail: ["moved": moved.joined(separator: ","), "failed": failed.keys.sorted().joined(separator: ",")])
+    }
+    struct Result: Encodable { let moved: [String]; let failed: [String: String] }
+    var lines = moved.map { "moved \($0) into the Secure Enclave vault" }
+    lines += failed.sorted { $0.key < $1.key }.map { "NOT moved \($0.key): \($0.value) (run migrate again and click Allow)" }
+    done(Result(moved: moved, failed: failed), lines.isEmpty ? "nothing to migrate" : lines.joined(separator: "\n"))
+}
+
+func cmdCheckTouchID() throws {
+    try DeviceOwnerPresence().confirm("check that Touch ID works for AWS CLI: ZSP (nothing is unlocked)")
+    done(["ok": true], "Touch ID works")
 }
 
 // MARK: Install
@@ -366,7 +404,9 @@ func load(_ label: String, _ plist: [String: Any]) throws {
 
 func cmdInstall() throws {
     let bin = selfPath()
-    guard let range = bin.range(of: ".app/Contents/MacOS/") else {
+    // The CLI lives in aws-cli-zsp.app/Contents/Helpers/aws-cli-zsp.app, a helper bundle so
+    // macOS names it "AWS CLI: ZSP" in Touch ID and Keychain dialogs.
+    guard let range = bin.range(of: ".app/Contents/Helpers/") else {
         fail("run install from the app bundle (bash scripts/build-app.sh installs it): \(bin) is not inside one")
     }
     let app = String(bin[..<range.lowerBound]) + ".app"
@@ -375,8 +415,13 @@ func cmdInstall() throws {
 
     let localBin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
     try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
-    let link = localBin.appendingPathComponent("zsp")
+    let link = localBin.appendingPathComponent("aws-cli-zsp")
     try? FileManager.default.removeItem(at: link)
+    // The command was called zsp before 0.2.0.
+    let oldLink = localBin.appendingPathComponent("zsp")
+    if (try? FileManager.default.destinationOfSymbolicLink(atPath: oldLink.path))?.contains("aws-cli-zsp") == true {
+        try? FileManager.default.removeItem(at: oldLink)
+    }
     try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: bin)
 
     var env: [String: String] = [:]
@@ -403,10 +448,11 @@ func cmdInstall() throws {
                              "LimitLoadToSessionType": "Aqua", "ProcessType": "Interactive", "EnvironmentVariables": env])
         menuLoaded = true
     }
-    let report = try makeVault().importPlaintext(origin: "zsp install")
-    try makeVault().audit.append("zsp.installed", detail: ["binary": bin])
+    let rewired = try makeVault().rewire()
+    let report = try makeVault().importPlaintext(origin: "aws-cli-zsp install")
+    try makeVault().audit.append("zsp.installed", detail: ["binary": bin, "rewired": rewired.joined(separator: ",")])
     var lines = ["installed: watcher \(watchLabel)\(menuLoaded ? ", menu bar app at login" : ""), \(link.path) → \(bin)"]
-    lines += report.imported.map { "moved \($0) to the Keychain" }
+    lines += report.imported.map { "moved \($0) into the vault" }
     if report.imported.isEmpty { lines.append("no plaintext keys to move") }
     done(report, lines.joined(separator: "\n"))
 }
@@ -417,8 +463,12 @@ func cmdUninstall() throws {
         _ = launchctl(["bootout", "\(domain)/\(label)"])
         try? FileManager.default.removeItem(at: agentsDir.appendingPathComponent("\(label).plist"))
     }
-    let link = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/zsp")
-    if (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil { try? FileManager.default.removeItem(at: link) }
+    for name in ["aws-cli-zsp", "zsp"] {
+        let link = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/\(name)")
+        if (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))?.contains("aws-cli-zsp") == true {
+            try? FileManager.default.removeItem(at: link)
+        }
+    }
     var restored: [String] = []
     if opts.flags.contains("--restore-plaintext") {
         confirm("Write every key back into \(paths.credentialsFile.path) in plain text?")
@@ -426,7 +476,7 @@ func cmdUninstall() throws {
     }
     _ = try? makeVault().audit.append("zsp.uninstalled", detail: ["restored": restored.joined(separator: ",")])
     done(restored, restored.isEmpty
-        ? "agents removed; keys stay in the Keychain and profiles still use zsp (remove the app last, or run with --restore-plaintext)"
+        ? "agents removed; keys stay in the vault and profiles still use aws-cli-zsp (remove the app last, or run with --restore-plaintext)"
         : "agents removed; wrote \(restored.joined(separator: ", ")) back to \(paths.credentialsFile.path)")
 }
 
@@ -450,6 +500,8 @@ run {
     case "inspect": try cmdInspect()
     case "audit": cmdAudit()
     case "install": try cmdInstall()
+    case "migrate": try cmdMigrate()
+    case "check-touch-id": try cmdCheckTouchID()
     case "uninstall": try cmdUninstall()
     case "version", "--version": print(version)
     case "", "help", "--help", "-h": print(usage)

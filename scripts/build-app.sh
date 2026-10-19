@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds aws-cli-zsp.app (menu bar app + the zsp CLI) and installs it to ~/Applications.
+# Builds aws-cli-zsp.app (the "AWS CLI: ZSP" menu bar app + the aws-cli-zsp command) and installs it to ~/Applications.
 #
 #   bash scripts/build-app.sh            # test, build, bundle, sign, install
-#   bash scripts/build-app.sh --install  # same, then `zsp install`: watcher, login item, first import
+#   bash scripts/build-app.sh --install  # same, then `aws-cli-zsp install`: watcher, login item, first import
 #
 # Installing the bundle changes nothing in ~/.aws. `--install` does: it moves every plaintext
-# key into the Keychain and points the profiles at zsp.
+# key into the Keychain and points the profiles at aws-cli-zsp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,12 +26,17 @@ APP="build/aws-cli-zsp.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/ZSPMenu" "$APP/Contents/MacOS/ZSPMenu"
-cp "$BIN_DIR/zsp" "$APP/Contents/MacOS/zsp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# The aws-cli-zsp command, as a helper bundle so dialogs name it "AWS CLI: ZSP".
+HELPER="$APP/Contents/Helpers/aws-cli-zsp.app"
+mkdir -p "$HELPER/Contents/MacOS"
+cp "$BIN_DIR/zsp" "$HELPER/Contents/MacOS/aws-cli-zsp"
+cp Resources/Helper-Info.plist "$HELPER/Contents/Info.plist"
 
 source "$(dirname "$0")/sign-id.sh"
 echo "== sign: $ZSP_SIGN_ID"
-codesign --force --identifier consulting.cloudscale.zsp --sign "$ZSP_SIGN_ID" "$APP/Contents/MacOS/zsp"
+# The Keychain trusts this signature (identifier + certificate): keep the identifier stable.
+codesign --force --sign "$ZSP_SIGN_ID" "$HELPER"
 codesign --force --sign "$ZSP_SIGN_ID" "$APP"
 codesign --verify --strict "$APP"
 
@@ -48,10 +53,10 @@ cp -R "$APP" "$DEST"
 echo "== installed: $DEST"
 
 if [[ "${1:-}" == "--install" ]]; then
-    "$DEST/Contents/MacOS/zsp" install
+    "$DEST/Contents/Helpers/aws-cli-zsp.app/Contents/MacOS/aws-cli-zsp" install
 elif [[ $WAS_RUNNING == 1 ]]; then
     open -g "$DEST"
     echo "== relaunched the menu bar app"
 else
-    echo "== next: $DEST/Contents/MacOS/zsp install   (moves your keys; see README)"
+    echo "== next: $DEST/Contents/Helpers/aws-cli-zsp.app/Contents/MacOS/aws-cli-zsp install   (moves your keys; see README)"
 fi

@@ -19,7 +19,7 @@ public enum Requester {
     static func commandLine(_ pid: pid_t) -> String {
         var args = redact(arguments(pid))
         // `python3 /opt/homebrew/bin/aws s3 ls` reads better as `aws s3 ls`.
-        if args.count > 1, let first = args.first, (first as NSString).lastPathComponent.hasPrefix("python") {
+        if args.count > 1, let first = args.first, (first as NSString).lastPathComponent.lowercased().hasPrefix("python") {
             args.removeFirst()
         }
         if args.isEmpty, let path = executablePath(pid) { args = [path] }

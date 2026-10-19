@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>AWS CLI ZSP</string>
+	<string>AWS CLI: ZSP</string>
 	<key>CFBundleExecutable</key>
 	<string>ZSPMenu</string>
 	<key>CFBundleIdentifier</key>
 	<string>consulting.cloudscale.awsclizsp</string>
 	<key>CFBundleName</key>
-	<string>aws-cli-zsp</string>
+	<string>AWS CLI: ZSP</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>

@@ -31,7 +31,7 @@ launchd (WatchPaths ~/.aws/*) ──▶ zsp import --auto ──▶ Keychain + s
 Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action shells out to zsp
 ```
 
-- **One trusted binary.** Only `zsp` touches a secret, so the Keychain access list trusts a
+- **Secure Enclave vault** (0.2.0): keys are sealed to an enclave key that demands Touch ID; the command is a helper app named "AWS CLI: ZSP" in dialogs.
   single code signature. It is signed with the local stable identity ("Claude Burst Local
   Signing"), so rebuilds keep that trust.
 - **ZSPCore** (library, unit tested): INI editing that preserves comments, the Keychain,

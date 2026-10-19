@@ -73,3 +73,30 @@ final class KeychainTests: XCTestCase {
         XCTAssertNil(try store.read(.master, "p1"))
     }
 }
+
+/// The real Secure Enclave. Only the no-prompt tier is read here: the guarded tier needs a finger.
+final class EnclaveTests: XCTestCase {
+    func testSealOpenAndBinding() throws {
+        try XCTSkipUnless(EnclaveStore.isAvailable)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsp-enclave-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = EnclaveStore(dir: dir)
+        try store.write(.session, "a b/c", Data("hello".utf8))
+        XCTAssertEqual(try store.read(.session, "a b/c"), Data("hello".utf8))
+        XCTAssertEqual(store.peek(.session, "a b/c"), Data("hello".utf8))
+        XCTAssertEqual(try store.accounts(.session), ["a b/c"])
+        let raw = try String(contentsOf: store.itemURL(.session, "a b/c"), encoding: .utf8)
+        XCTAssertFalse(raw.contains("hello"))
+
+        // A sealed item moved under another name does not open.
+        try FileManager.default.copyItem(at: store.itemURL(.session, "a b/c"), to: store.itemURL(.session, "other"))
+        XCTAssertThrowsError(try store.read(.session, "other"))
+
+        // Writing a guarded item needs no Touch ID; peeking at one never prompts.
+        try store.write(.master, "p", Data("secret".utf8))
+        XCTAssertEqual(try store.accounts(.master), ["p"])
+        XCTAssertNil(store.peek(.master, "p"))
+        try store.delete(.master, "p")
+        XCTAssertEqual(try store.accounts(.master), [])
+    }
+}
