@@ -11,7 +11,7 @@ every use of a key, the audit trail is hash-chained, and rotate and revoke happe
 | Threat | Today (plaintext file) | With zsp |
 |---|---|---|
 | Anything running as you reads `~/.aws/credentials` (`cat`, malware, a compromised npm package, an AI agent, a screenshot) | Gets every long-lived key | The file holds no secrets. Keys are in the login Keychain, and only the zsp binary can read them without a macOS prompt |
-| A process asks zsp for credentials | n/a | It gets a session of at most 1h (configurable, 15m–12h). Minting a session needs Touch ID. Session credentials cannot call IAM without MFA, so the long-lived key can't be minted again from them |
+| A process asks zsp for credentials | n/a | It gets a session of at most 1h (configurable, 15m–12h). Minting a session needs Touch ID. Session credentials cannot call IAM without MFA. With `mfa enforce`, sessions carry MFA, so the policy also requires MFA from the last 5 minutes for minting keys, MFA devices or policies: a leaked hour-long session cannot make itself permanent |
 | A key leaks anyway | Valid until someone notices | **Inspect** shows when AWS last saw each key used. **Revoke sessions** denies every token issued before now. **Rotate** swaps the key in seconds |
 | Someone edits the audit log to hide use | n/a | Each entry hashes the one before it, and the newest hash is anchored in the Keychain. An edit, a deletion or a truncation fails `zsp audit --verify` |
 | `aws configure` writes a new key in plaintext | Stays there forever | The launchd WatchPaths agent moves it within about 2s, and a 5-minute sweep catches anything the watcher missed |
@@ -72,8 +72,9 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
 
 ## Later
 
-- MFA (`mfa_serial`) for GetSessionToken via a native code prompt, which also lets
-  sessions call IAM.
+- Done in 0.3.0: this Mac as a virtual MFA device, `mfa enforce`, and approval by a phone
+  code (`remote enable`, `approve`) for Claude Code Remote Control. Still to do: profiles
+  with `mfa_serial` + `role_arn` (AssumeRole with MFA).
 - Roles: `source_profile` already works through credential_process; native AssumeRole
   caching could come later.
 - IAM Identity Center (SSO) profiles, to remove long-lived keys entirely.

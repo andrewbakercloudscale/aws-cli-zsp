@@ -39,9 +39,33 @@ public struct MasterKey: Codable, Equatable, Sendable {
     public var sessionToken: String?
     public var importedAt: Date
     public var source: String
+    /// This Mac's own virtual MFA device for the key's IAM user (`aws-cli-zsp mfa setup`): its
+    /// ARN and base32 seed. Sealed with the key, so one Touch ID gives both.
+    public var mfaSerial: String? = nil
+    public var mfaSeed: String? = nil
+
+    /// The copy kept for approval by MFA code: the key without this Mac's MFA seed, so whoever
+    /// reads it still needs a code from your phone.
+    public var withoutMFASeed: MasterKey {
+        var k = self
+        k.mfaSeed = nil
+        k.mfaSerial = nil
+        return k
+    }
 
     public var credentials: AWSCredentials {
         AWSCredentials(accessKeyId: accessKeyId, secretAccessKey: secretAccessKey, sessionToken: sessionToken)
+    }
+}
+
+/// A one-time code from an MFA device, for GetSessionToken.
+public struct MFACode: Equatable, Sendable {
+    public var serial: String
+    public var code: String
+
+    public init(serial: String, code: String) {
+        self.serial = serial
+        self.code = code
     }
 }
 

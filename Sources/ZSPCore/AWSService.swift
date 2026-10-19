@@ -2,7 +2,7 @@ import Foundation
 
 /// The handful of STS and IAM calls zsp makes. A protocol so tests run without AWS.
 public protocol AWSService {
-    func getSessionToken(_ c: AWSCredentials, durationSeconds: Int) throws -> AWSCredentials
+    func getSessionToken(_ c: AWSCredentials, durationSeconds: Int, mfa: MFACode?) throws -> AWSCredentials
     func getCallerIdentity(_ c: AWSCredentials) throws -> CallerIdentity
     func listAccessKeys(_ c: AWSCredentials) throws -> [AccessKeyInfo]
     func createAccessKey(_ c: AWSCredentials) throws -> AWSCredentials
@@ -10,6 +10,17 @@ public protocol AWSService {
     func deleteAccessKey(_ c: AWSCredentials, keyId: String) throws
     func getAccessKeyLastUsed(_ c: AWSCredentials, keyId: String) throws -> AccessKeyLastUsed
     func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws
+    func listMFADevices(_ c: AWSCredentials) throws -> [String]
+    /// A new virtual MFA device: its ARN and base32 seed.
+    func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String)
+    func enableMFADevice(_ c: AWSCredentials, userName: String, serial: String, code1: String, code2: String) throws
+    func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws
+}
+
+public extension AWSService {
+    func getSessionToken(_ c: AWSCredentials, durationSeconds: Int) throws -> AWSCredentials {
+        try getSessionToken(c, durationSeconds: durationSeconds, mfa: nil)
+    }
 }
 
 /// STS and IAM over the AWS Query protocol: a signed form POST, an XML answer.
@@ -88,8 +99,10 @@ public final class AWSQueryService: AWSService {
         return v
     }
 
-    public func getSessionToken(_ c: AWSCredentials, durationSeconds: Int) throws -> AWSCredentials {
-        let doc = try call(Self.sts, "GetSessionToken", [("DurationSeconds", String(durationSeconds))], c)
+    public func getSessionToken(_ c: AWSCredentials, durationSeconds: Int, mfa: MFACode?) throws -> AWSCredentials {
+        var params = [("DurationSeconds", String(durationSeconds))]
+        if let mfa { params += [("SerialNumber", mfa.serial), ("TokenCode", mfa.code)] }
+        let doc = try call(Self.sts, "GetSessionToken", params, c)
         return AWSCredentials(accessKeyId: try Self.required(doc, "AccessKeyId"),
                               secretAccessKey: try Self.required(doc, "SecretAccessKey"),
                               sessionToken: try Self.required(doc, "SessionToken"),
@@ -135,5 +148,28 @@ public final class AWSQueryService: AWSService {
 
     public func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws {
         _ = try call(Self.iam, "PutUserPolicy", [("UserName", userName), ("PolicyName", policyName), ("PolicyDocument", document)], c)
+    }
+
+    public func listMFADevices(_ c: AWSCredentials) throws -> [String] {
+        let doc = try call(Self.iam, "ListMFADevices", [], c)
+        let members = (try? doc.nodes(forXPath: "//*[local-name()='MFADevices']/*[local-name()='member']")) ?? []
+        return members.compactMap { Self.text($0, "SerialNumber") }
+    }
+
+    public func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String) {
+        let doc = try call(Self.iam, "CreateVirtualMFADevice", [("VirtualMFADeviceName", name)], c)
+        let raw = try Self.required(doc, "Base32StringSeed")
+        // A blob in the Query API, so it arrives base64-encoded: the base32 text inside it.
+        let seed = Data(base64Encoded: raw).map { String(decoding: $0, as: UTF8.self) } ?? raw
+        return (try Self.required(doc, "SerialNumber"), seed)
+    }
+
+    public func enableMFADevice(_ c: AWSCredentials, userName: String, serial: String, code1: String, code2: String) throws {
+        _ = try call(Self.iam, "EnableMFADevice", [("UserName", userName), ("SerialNumber", serial),
+                                                   ("AuthenticationCode1", code1), ("AuthenticationCode2", code2)], c)
+    }
+
+    public func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws {
+        _ = try call(Self.iam, "DeleteVirtualMFADevice", [("SerialNumber", serial)], c)
     }
 }

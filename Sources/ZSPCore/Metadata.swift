@@ -17,6 +17,12 @@ public struct ProfileMeta: Codable, Equatable, Identifiable, Sendable {
     public var account: String?
     public var arn: String?
     public var keyStatus: String?
+    /// This Mac's virtual MFA device, after `aws-cli-zsp mfa setup`.
+    public var mfaSerial: String?
+    /// AWS refuses the key without MFA (`aws-cli-zsp mfa enforce`).
+    public var mfaEnforced: Bool?
+    /// The MFA device (your phone) whose codes approve a session when nobody is at the Mac.
+    public var remoteSerial: String?
     /// Not stored: whether the key is in the Keychain right now.
     public var inKeychain: Bool?
 

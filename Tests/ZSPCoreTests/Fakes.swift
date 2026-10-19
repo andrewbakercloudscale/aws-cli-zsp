@@ -10,9 +10,14 @@ final class FakeAWS: AWSService {
     var rejectNewKeyTimes = 0
     var policies: [(user: String, name: String, document: String)] = []
     var failSession: ZSPError?
+    var mfaDevices: [String] = []
+    var mfaCodes: [MFACode] = []
+    var enabled: [(serial: String, code1: String, code2: String)] = []
+    let mfaSeed = "JBSWY3DPEHPK3PXP"
 
-    func getSessionToken(_ c: AWSCredentials, durationSeconds: Int) throws -> AWSCredentials {
-        calls.append("GetSessionToken \(c.accessKeyId) \(durationSeconds)")
+    func getSessionToken(_ c: AWSCredentials, durationSeconds: Int, mfa: MFACode?) throws -> AWSCredentials {
+        calls.append("GetSessionToken \(c.accessKeyId) \(durationSeconds)\(mfa.map { " mfa=\($0.serial)" } ?? "")")
+        if let mfa { mfaCodes.append(mfa) }
         if let failSession { throw failSession }
         sessionCount += 1
         return AWSCredentials(accessKeyId: "ASIASESSION\(sessionCount)", secretAccessKey: "sessionsecret\(sessionCount)",
@@ -57,6 +62,26 @@ final class FakeAWS: AWSService {
     func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws {
         calls.append("PutUserPolicy \(userName) \(policyName)")
         policies.append((userName, policyName, document))
+    }
+
+    func listMFADevices(_ c: AWSCredentials) throws -> [String] {
+        calls.append("ListMFADevices \(c.accessKeyId)")
+        return mfaDevices
+    }
+
+    func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String) {
+        calls.append("CreateVirtualMFADevice \(name)")
+        return ("arn:aws:iam::123456789012:mfa/\(name)", mfaSeed)
+    }
+
+    func enableMFADevice(_ c: AWSCredentials, userName: String, serial: String, code1: String, code2: String) throws {
+        calls.append("EnableMFADevice \(userName) \(serial)")
+        enabled.append((serial, code1, code2))
+        mfaDevices.append(serial)
+    }
+
+    func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws {
+        calls.append("DeleteVirtualMFADevice \(serial)")
     }
 }
 

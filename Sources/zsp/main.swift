@@ -1,8 +1,9 @@
+import CoreGraphics
 import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.2.0"
+let version = "0.3.0"
 
 let usage = """
 aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
@@ -18,6 +19,13 @@ Using them
   aws-cli-zsp credential-process --profile P   what ~/.aws/config calls; prints a short-lived session
   aws-cli-zsp exec --profile P -- CMD...       run CMD with a session in its environment
   aws-cli-zsp duration [--profile P] 1h        session length (15m to 12h, default 1h)
+
+MFA, and approval when nobody is at the Mac (Claude Code Remote Control)
+  aws-cli-zsp mfa setup --profile P            make this Mac an MFA device: every session carries MFA, still one Touch ID
+  aws-cli-zsp mfa enforce --profile P          AWS refuses the key without MFA, so a copy of it alone is worthless
+  aws-cli-zsp remote enable --profile P [--serial ARN]   let a code from your phone approve a session
+  aws-cli-zsp approve --profile P CODE         issue a session with that code, no Touch ID
+  aws-cli-zsp remote disable --profile P
 
 Rotate and revoke
   aws-cli-zsp rotate --profile P [--keep-old]  new key, verified, old one deleted (or deactivated)
@@ -46,7 +54,7 @@ struct Options {
     var flags: Set<String> = []
     var rest: [String] = []
 
-    static let takesValue: Set<String> = ["--profile", "--limit", "--access-key-id"]
+    static let takesValue: Set<String> = ["--profile", "--limit", "--access-key-id", "--serial", "--name"]
 
     init(_ argv: [String]) {
         var i = 0
@@ -150,7 +158,22 @@ func makeVault() -> Vault {
     let store = EnclaveStore(dir: paths.supportDir.appendingPathComponent("vault"))
     let presence = DeviceOwnerPresence(enclaveGated: true)
     store.context = { presence.context }
-    return Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
+    let vault = Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
+    vault.someoneAtMac = someoneAtMac
+    return vault
+}
+
+/// Someone can answer Touch ID: the screen is unlocked and the keyboard, mouse or trackpad was
+/// used in the last 5 minutes (ZSP_AWAY_AFTER seconds). Claude Code's own commands are not
+/// input events, so under Remote Control this is false and nothing waits on a hidden prompt.
+func someoneAtMac() -> Bool {
+    let env = ProcessInfo.processInfo.environment
+    if env["ZSP_ASSUME_PRESENT"] == "1" { return true }
+    if let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+       (session["CGSSessionScreenIsLocked"] as? Bool) == true { return false }
+    let limit = env["ZSP_AWAY_AFTER"].flatMap(Double.init) ?? 300
+    guard let any = CGEventType(rawValue: UInt32.max) else { return true }
+    return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: any) < limit
 }
 
 func run(_ body: () throws -> Void) {
@@ -219,7 +242,10 @@ func cmdList() {
         let session = p.sessionActive() ? "session until \(clock(p.sessionExpiresAt!))" : "no session"
         let status = p.keyStatus.map { " [\($0)]" } ?? ""
         let missing = p.inKeychain == false ? " (NOT in the vault: run aws-cli-zsp migrate)" : ""
-        lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
+        var mfa = ""
+        if p.mfaSerial != nil { mfa += p.mfaEnforced == true ? " [MFA enforced]" : " [MFA]" }
+        if let r = p.remoteSerial { mfa += " [remote: \(r.split(separator: "/").last ?? "")]" }
+        lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(mfa)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
     }
     for f in findings { lines.append("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
     done(ListResult(profiles: profiles, plaintext: findings), lines.joined(separator: "\n"))
@@ -389,6 +415,60 @@ func cmdCheckTouchID() throws {
     done(["ok": true], "Touch ID works")
 }
 
+// MARK: MFA and approval by code
+
+func cmdMFA() throws {
+    let profile = requireProfile()
+    let vault = makeVault()
+    switch opts.rest.first ?? "" {
+    case "setup":
+        let host = (Host.current().localizedName ?? "mac").lowercased()
+        let raw = opts.values["--name"] ?? "aws-cli-zsp-\(host)-\(profile)"
+        let name = String(raw.map { $0.isLetter || $0.isNumber || "+=,.@-_".contains($0) ? $0 : "-" }.prefix(64))
+        let serial = try vault.setupMFA(profile, deviceName: name)
+        done(["profile": profile, "serial": serial], """
+            this Mac is now an MFA device for \(profile): \(serial)
+            every session it issues carries MFA, still with one Touch ID. Next: aws-cli-zsp mfa enforce --profile \(profile)
+            """)
+    case "enforce":
+        confirm("Make AWS refuse the \(profile) key unless MFA is present? Scripts that use this key directly, not through aws-cli-zsp, stop working.")
+        try vault.enforceMFA(profile)
+        done(["profile": profile], """
+            AWS now refuses the \(profile) key without MFA (inline policy \(Vault.requireMFAPolicyName)); a copy of the key alone is worth nothing.
+            To approve from your phone when away from the Mac: aws-cli-zsp remote enable --profile \(profile)
+            """)
+    default:
+        fail("usage: aws-cli-zsp mfa setup|enforce --profile P")
+    }
+}
+
+func cmdRemote() throws {
+    let profile = requireProfile()
+    let vault = makeVault()
+    switch opts.rest.first ?? "" {
+    case "enable":
+        let serial = try vault.enableRemote(profile, serial: opts.values["--serial"])
+        done(["profile": profile, "serial": serial], """
+            away from the Mac, a code from \(serial) approves \(profile):
+              aws-cli-zsp approve --profile \(profile) 123456
+            Claude Code asks you for the code when it needs one.
+            """)
+    case "disable":
+        try vault.disableRemote(profile)
+        done(["profile": profile], "approval by MFA code is off for \(profile): only Touch ID at the Mac unlocks it")
+    default:
+        fail("usage: aws-cli-zsp remote enable|disable --profile P [--serial ARN]")
+    }
+}
+
+func cmdApprove() throws {
+    let profile = requireProfile()
+    guard let code = opts.rest.first else { fail("usage: aws-cli-zsp approve --profile \(profile) CODE (the 6 digits from your MFA app)") }
+    let c = try makeVault().approve(profile, code: code, requester: Requester.describe(pid: getpid()))
+    let until = c.expiration.map { " until \(clock($0))" } ?? ""
+    done(["profile": profile, "expires": c.expiration.map(iso8601) ?? ""], "approved: \(profile) has a session\(until); aws commands with --profile \(profile) now work")
+}
+
 func cmdUI() throws {
     let bin = selfPath()
     guard let range = bin.range(of: ".app/Contents/Helpers/") else {
@@ -530,6 +610,9 @@ run {
     case "migrate": try cmdMigrate()
     case "check-touch-id": try cmdCheckTouchID()
     case "ui", "open": try cmdUI()
+    case "mfa": try cmdMFA()
+    case "remote": try cmdRemote()
+    case "approve": try cmdApprove()
     case "uninstall": try cmdUninstall()
     case "version", "--version": print(version)
     case "", "help", "--help", "-h": print(usage)

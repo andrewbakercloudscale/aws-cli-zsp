@@ -20,6 +20,8 @@ and adds:
 | Audit trail | ❌ | hash-chained, with who asked (`aws s3 ls ← zsh`) |
 | Rotate a key | `aws-vault rotate` | one click, verified before the old key is deleted |
 | Revoke sessions already issued (a thief's too) | ❌ | one click (an `aws:TokenIssueTime` deny policy) |
+| MFA enforced by AWS, not just asked for locally | `mfa_serial`, a code typed each session | this Mac is an MFA device (one Touch ID), and AWS refuses the bare key |
+| Approve when you are not at the Mac (Claude Code Remote Control) | ❌ | a code from your phone: `aws-cli-zsp approve` |
 | When AWS last saw each key used | ❌ | **Check last use in AWS** |
 | Menu bar UI | ❌ | ✅ |
 | Works with plain `aws` and every SDK, no wrapper | `exec` or `credential_process` | `credential_process`, wired for you |
@@ -176,6 +178,66 @@ mint a new key, and **Revoke sessions** kills every one issued so far.
   the one before it, and the newest hash is sealed separately, so editing, deleting or
   truncating the file fails `aws-cli-zsp audit --verify`.
 
+## MFA, and approving from your phone
+
+Touch ID protects the key on this Mac, but AWS does not know about it: a copy of the key
+would work anywhere. Two commands make AWS itself demand MFA, without adding a step locally:
+
+```bash
+aws-cli-zsp mfa setup   --profile bedrock   # this Mac becomes a virtual MFA device for the key's IAM user
+aws-cli-zsp mfa enforce --profile bedrock   # AWS denies everything the key does without MFA
+```
+
+`mfa setup` creates a virtual MFA device in IAM and seals its seed with the key, so every
+session the Mac issues carries MFA and still costs one Touch ID. `mfa enforce` attaches an
+inline policy (`aws-cli-zsp-require-mfa`) that denies every action except `GetSessionToken`
+and `GetCallerIdentity` when `aws:MultiFactorAuthPresent` is false. Because MFA sessions may
+call IAM, a second statement requires MFA from the last 5 minutes for creating keys, MFA
+devices or policies: aws-cli-zsp's own admin calls use a fresh session, while a leaked
+hour-long CLI session cannot mint itself a permanent key. It refuses to run until an MFA
+session from this Mac has worked, so it cannot lock you out.
+
+**When nobody is at the Mac** (Claude Code driven over Remote Control from your phone, or the
+screen locked), a Touch ID prompt would wait where nobody can see it. Instead, when the screen
+is locked or the Mac has had no keyboard or mouse input for 5 minutes, a new session fails at
+once with what to do. With remote approval enabled, a code from your phone's authenticator
+approves it:
+
+```bash
+aws-cli-zsp remote enable --profile bedrock    # once, at the Mac: needs mfa enforce and an MFA device on your phone
+aws-cli-zsp approve --profile bedrock 123456   # what Claude Code runs after asking you for the code
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You as You (phone)
+    participant CC as Claude Code (on the Mac)
+    participant ZSP as aws-cli-zsp
+    participant STS as AWS STS
+
+    CC->>ZSP: aws s3 ls --profile bedrock (credential_process)
+    ZSP->>ZSP: no session, nobody at the Mac
+    ZSP-->>CC: error: ask the user for an MFA code, then aws-cli-zsp approve
+    CC->>You: "I need the 6-digit code for bedrock"
+    You-->>CC: 123456 (from your authenticator app)
+    CC->>ZSP: aws-cli-zsp approve --profile bedrock 123456
+    ZSP->>STS: GetSessionToken with the key, your phone's MFA serial and the code
+    STS-->>ZSP: session (1 hour by default)
+    ZSP->>ZSP: seal the session, audit: session.issued approved=mfa-code
+    CC->>ZSP: aws s3 ls --profile bedrock (again)
+    ZSP-->>CC: the cached session, no prompt
+```
+
+Why this is safe: approval by code needs a copy of the key that opens without Touch ID
+(sealed to the enclave's no-prompt key, so still useless off this Mac). That copy has no MFA
+seed, and `remote enable` refuses to make it until `mfa enforce` has run. So a program that
+reads it gets a key AWS refuses without a code from your phone, which it does not have. The
+code AWS sees once and rejects on reuse; it is in your chat for 30 seconds of usefulness.
+
+The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`
+and `iam:PutUserPolicy` on itself for these commands.
+
 ## Commands
 
 ```
@@ -189,6 +251,9 @@ aws-cli-zsp clear-sessions [--profile P]      drop cached sessions here (the nex
 aws-cli-zsp duration --profile P 8h           session length, 15m to 12h (default 1h)
 aws-cli-zsp exec --profile P -- terraform plan
 aws-cli-zsp disable-key | delete-key | forget --profile P
+aws-cli-zsp mfa setup | enforce --profile P
+aws-cli-zsp remote enable [--serial ARN] | disable --profile P
+aws-cli-zsp approve --profile P CODE
 aws-cli-zsp audit [--verify] [--limit N]
 aws-cli-zsp migrate                           move 0.1.x Keychain items into the vault
 aws-cli-zsp check-touch-id                    show the Touch ID prompt, unlock nothing
@@ -209,12 +274,15 @@ aws-cli-zsp uninstall [--restore-plaintext]
 - Rotate, revoke and disable call IAM with the profile's own key, so the IAM user needs
   `iam:ListAccessKeys`, `iam:CreateAccessKey`, `iam:DeleteAccessKey`, `iam:UpdateAccessKey`,
   `iam:GetAccessKeyLastUsed` and `iam:PutUserPolicy` on itself.
-- MFA (`mfa_serial`) is not supported yet; see PLAN.md.
+- Profiles with `mfa_serial` and `role_arn` (AssumeRole with MFA) are not handled by
+  aws-cli-zsp yet; its own MFA covers the key's direct use. See PLAN.md.
+- Away detection is a heuristic: 5 minutes without input (`ZSP_AWAY_AFTER`) or a locked
+  screen. Sitting still and reading counts as away; touch the trackpad and retry.
 
 ## Development
 
 ```bash
-swift test                               # 32 tests, including the real Secure Enclave (no-prompt tier)
+swift test                               # 38 tests, including the real Secure Enclave (no-prompt tier)
 ZSP_NETWORK_TESTS=1 swift test           # adds a real STS call with a fake key (expects InvalidClientTokenId)
 ```
 

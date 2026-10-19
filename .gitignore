@@ -5,3 +5,6 @@ dist/
 .DS_Store
 .swiftpm/
 .omc/
+
+# The global *secret* ignore would drop the Keychain/presence code from every clone.
+!Sources/ZSPCore/SecretStore.swift

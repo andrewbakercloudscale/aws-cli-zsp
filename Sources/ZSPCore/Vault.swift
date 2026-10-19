@@ -71,6 +71,10 @@ public final class Vault {
     public let commandPath: String
     var now: () -> Date = Date.init
     var pause: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    /// Whether someone is at the Mac to answer Touch ID. When nobody is (the screen is locked,
+    /// or no keyboard or mouse for a while, as under Claude Code Remote Control), a new session
+    /// fails at once with what to do instead, rather than waiting on a prompt nobody can see.
+    public var someoneAtMac: () -> Bool = { true }
 
     public init(paths: Paths, store: SecretStore, auth: UserPresence, aws: AWSService, commandPath: String) {
         self.paths = paths
@@ -157,7 +161,12 @@ public final class Vault {
     func adopt(_ key: MasterKey, profile: String, event: String, origin: String) throws -> Bool {
         let previous = meta.all()[profile]
         let changed = previous.map { $0.accessKeyId != key.accessKeyId } ?? false
-        try writeMaster(key, profile)
+        // The same key again (pasted twice) keeps the sealed copy, and with it this Mac's MFA
+        // seed. A different key drops the MFA set-up and the remote copy: they belonged to the old one.
+        if changed || previous == nil || !hasMaster(profile) { try store.write(.master, profile, try ZSPJSON.encoder.encode(key)) }
+        if changed {
+            try store.delete(.remote, profile)
+        }
         if changed || previous == nil { try store.delete(.session, profile) }
         try meta.update(profile) { m in
             var e = m ?? ProfileMeta(profile: profile, accessKeyId: key.accessKeyId, importedAt: key.importedAt,
@@ -170,6 +179,7 @@ public final class Vault {
             e.source = key.source
             e.temporary = key.sessionToken != nil
             if changed || previous == nil { e.sessionExpiresAt = nil }
+            if changed { e.mfaSerial = nil; e.mfaEnforced = nil; e.remoteSerial = nil }
             m = e
         }
         var detail = ["keyId": maskKeyId(key.accessKeyId), "from": key.source, "by": origin]
@@ -183,6 +193,10 @@ public final class Vault {
         // The store confirms the write itself (the enclave store reads its sealed file back):
         // decrypting it here would cost a Touch ID prompt for every key moved in.
         try store.write(.master, profile, try ZSPJSON.encoder.encode(key))
+        // Remote approval keeps its copy in step (a rotation, a new MFA device).
+        if (try? store.accounts(.remote).contains(profile)) == true {
+            try store.write(.remote, profile, try ZSPJSON.encoder.encode(key.withoutMFASeed))
+        }
     }
 
     /// Stores a key exactly as an older store held it (the migration from 0.1.x).
@@ -227,6 +241,10 @@ public final class Vault {
                 return s
             }
             let seconds = Settings.load(paths).duration(for: profile)
+            guard someoneAtMac() else {
+                _ = try? audit.append("session.away", profile: profile, ok: false, requester: requester)
+                throw awayError(profile)
+            }
             let reason = "unlock your “\(profile)” AWS key for a \(durationText(seconds)) session, for \(asker ?? requester)"
             let master = try unlock(profile, reason: reason, requester: requester)
             if master.sessionToken != nil {
@@ -234,25 +252,208 @@ public final class Vault {
                 try? meta.update(profile) { $0?.lastUsedAt = t; $0?.lastRequester = requester }
                 return master.credentials
             }
-            let session: AWSCredentials
+            return try issue(profile, master, seconds: seconds, mfa: try ownMFACode(master), approvedBy: "touch-id",
+                             requester: requester)
+        }
+    }
+
+    /// GetSessionToken, then the session is sealed, logged and remembered.
+    func issue(_ profile: String, _ master: MasterKey, seconds: Int, mfa: MFACode?, approvedBy: String,
+               requester: String) throws -> AWSCredentials {
+        let session: AWSCredentials
+        do {
+            session = try aws.getSessionToken(master.credentials, durationSeconds: seconds, mfa: mfa)
+        } catch {
+            _ = try? audit.append("session.failed", profile: profile, ok: false, detail: ["error": error.localizedDescription],
+                              requester: requester)
+            throw error
+        }
+        try store.write(.session, profile, try ZSPJSON.encoder.encode(session))
+        var detail = ["keyId": maskKeyId(master.accessKeyId), "seconds": String(seconds),
+                      "expires": session.expiration.map(iso8601) ?? "?", "approved": approvedBy]
+        if let mfa { detail["mfa"] = mfa.serial.split(separator: "/").last.map(String.init) ?? mfa.serial }
+        try audit.append("session.issued", profile: profile, detail: detail, requester: requester)
+        try? meta.update(profile) {
+            $0?.lastUsedAt = self.now()
+            $0?.lastRequester = requester
+            $0?.sessionExpiresAt = session.expiration
+        }
+        return session
+    }
+
+    func awayError(_ profile: String) -> ZSPError {
+        let m = meta.all()[profile]
+        if m?.remoteSerial != nil {
+            return .auth("Nobody is at the Mac to approve Touch ID for AWS profile “\(profile)”. "
+                + "Ask the user for the 6-digit code from their MFA app, then run: aws-cli-zsp approve --profile \(profile) CODE "
+                + "(and retry). Or approve at the Mac and retry.")
+        }
+        return .auth("Nobody is at the Mac to approve Touch ID for AWS profile “\(profile)”, and approval by MFA code is not set up "
+            + "for it. Approve at the Mac and retry; to approve from a phone next time, run at the Mac: "
+            + "aws-cli-zsp remote enable --profile \(profile)")
+    }
+
+    // MARK: MFA
+
+    public static let requireMFAPolicyName = "aws-cli-zsp-require-mfa"
+
+    /// A code from this Mac's own MFA device, when the key has one.
+    func ownMFACode(_ master: MasterKey) throws -> MFACode? {
+        guard let serial = master.mfaSerial, let seed = master.mfaSeed else { return nil }
+        guard let secret = TOTP.base32Decode(seed) else { throw ZSPError.invalid("the MFA seed for \(serial) is damaged; run aws-cli-zsp mfa setup again") }
+        return MFACode(serial: serial, code: TOTP.code(secret: secret, counter: try freshCounter(serial)))
+    }
+
+    /// AWS accepts each code once, so two sessions inside one 30-second window would see the
+    /// second refused: the second waits for the next window.
+    func freshCounter(_ serial: String) throws -> UInt64 {
+        let file = paths.supportDir.appendingPathComponent("mfa-counters.json")
+        return try withFileLock(paths.lock("mfa")) {
+            var used = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([String: UInt64].self, from: $0) } ?? [:]
+            var c = TOTP.counter(at: now())
+            if let last = used[serial], c <= last {
+                pause(TimeInterval(last + 1) * TOTP.period - now().timeIntervalSince1970 + 0.5)
+                c = max(last + 1, TOTP.counter(at: now()))
+            }
+            used[serial] = c
+            try writeAtomically(String(decoding: try JSONEncoder().encode(used), as: UTF8.self), to: file)
+            return c
+        }
+    }
+
+    /// What IAM calls are made with: the key itself, or, once it has an MFA device here, a
+    /// short MFA session (which IAM requires once `mfa enforce` has run).
+    func adminCredentials(_ master: MasterKey) throws -> AWSCredentials {
+        guard let mfa = try ownMFACode(master) else { return master.credentials }
+        return try aws.getSessionToken(master.credentials, durationSeconds: 900, mfa: mfa)
+    }
+
+    func iamUser(_ c: AWSCredentials) throws -> (user: String, identity: CallerIdentity) {
+        let identity = try aws.getCallerIdentity(c)
+        guard let user = Self.userName(fromArn: identity.arn) else {
+            throw ZSPError.invalid("\(identity.arn) is not an IAM user, so it has no MFA devices or user policies")
+        }
+        return (user, identity)
+    }
+
+    /// Gives this Mac its own virtual MFA device for the key's IAM user. Its seed is sealed with
+    /// the key, so local use stays one Touch ID while every session carries MFA.
+    public func setupMFA(_ profile: String, deviceName: String) throws -> String {
+        let master = try unlock(profile, reason: "add an MFA device for this Mac to AWS profile “\(profile)”")
+        guard master.sessionToken == nil else { throw ZSPError.invalid("“\(profile)” holds temporary credentials: there is no IAM user to add MFA to") }
+        // Setting up again once MFA is enforced needs the current device's MFA session.
+        let c = try adminCredentials(master)
+        let (user, identity) = try iamUser(c)
+        let device = try aws.createVirtualMFADevice(c, name: deviceName)
+        guard let secret = TOTP.base32Decode(device.seed) else { throw ZSPError.aws(code: "BadResponse", message: "the MFA seed is not base32") }
+        let c1 = TOTP.counter(at: now())
+        do {
+            try aws.enableMFADevice(c, userName: user, serial: device.serial,
+                                    code1: TOTP.code(secret: secret, counter: c1), code2: TOTP.code(secret: secret, counter: c1 + 1))
+        } catch {
+            try? aws.deleteVirtualMFADevice(c, serial: device.serial)
+            throw error
+        }
+        var updated = master
+        updated.mfaSerial = device.serial
+        updated.mfaSeed = device.seed
+        try writeMaster(updated, profile)
+        // Both codes are spent: the first session waits for the window after them.
+        let file = paths.supportDir.appendingPathComponent("mfa-counters.json")
+        try withFileLock(paths.lock("mfa")) {
+            var used = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([String: UInt64].self, from: $0) } ?? [:]
+            used[device.serial] = c1 + 1
+            try writeAtomically(String(decoding: try JSONEncoder().encode(used), as: UTF8.self), to: file)
+        }
+        try store.delete(.session, profile)
+        try meta.update(profile) { $0?.mfaSerial = device.serial; $0?.account = identity.account; $0?.arn = identity.arn; $0?.sessionExpiresAt = nil }
+        try audit.append("mfa.setup", profile: profile, detail: ["device": device.serial, "user": user])
+        return device.serial
+    }
+
+    /// Attaches a policy that refuses everything the key does without MFA, so the key alone,
+    /// copied or stolen, is worth nothing. Checked first: an MFA session from this Mac must work.
+    public func enforceMFA(_ profile: String) throws {
+        let master = try unlock(profile, reason: "make AWS refuse the “\(profile)” key without MFA")
+        guard master.mfaSeed != nil else {
+            throw ZSPError.invalid("Run aws-cli-zsp mfa setup --profile \(profile) first: without an MFA device on this Mac, enforcing MFA would lock this Mac out")
+        }
+        let session = try adminCredentials(master)
+        let (user, _) = try iamUser(session)
+        try aws.putUserPolicy(session, userName: user, policyName: Self.requireMFAPolicyName, document: Self.requireMFAPolicy)
+        try store.delete(.session, profile)
+        try meta.update(profile) { $0?.mfaEnforced = true; $0?.sessionExpiresAt = nil }
+        try audit.append("mfa.enforced", profile: profile, detail: ["user": user, "policy": Self.requireMFAPolicyName])
+    }
+
+    /// Everything except what getting an MFA session needs is denied without MFA. And since an
+    /// MFA session may call IAM, the calls that would mint a new key, MFA device or policy need
+    /// MFA from the last 5 minutes: zsp's own 15-minute admin sessions are used at once, while
+    /// an hour-long CLI session that leaked cannot make itself permanent.
+    public static let requireMFAPolicy = "{\"Version\":\"2012-10-17\",\"Statement\":["
+        + "{\"Sid\":\"AwsCliZspRequireMfa\",\"Effect\":\"Deny\",\"NotAction\":[\"sts:GetSessionToken\",\"sts:GetCallerIdentity\"],\"Resource\":\"*\",\"Condition\":{\"BoolIfExists\":{\"aws:MultiFactorAuthPresent\":\"false\"}}},"
+        + "{\"Sid\":\"AwsCliZspFreshMfaForCredentials\",\"Effect\":\"Deny\",\"Action\":[" + selfManagementActions.map { "\"\($0)\"" }.joined(separator: ",")
+        + "],\"Resource\":\"*\",\"Condition\":{\"NumericGreaterThanIfExists\":{\"aws:MultiFactorAuthAge\":\"300\"}}}]}"
+
+    static let selfManagementActions = [
+        "iam:CreateAccessKey", "iam:UpdateAccessKey", "iam:DeleteAccessKey",
+        "iam:CreateVirtualMFADevice", "iam:EnableMFADevice", "iam:DeactivateMFADevice", "iam:DeleteVirtualMFADevice", "iam:ResyncMFADevice",
+        "iam:PutUserPolicy", "iam:DeleteUserPolicy", "iam:AttachUserPolicy", "iam:DetachUserPolicy",
+        "iam:CreateLoginProfile", "iam:UpdateLoginProfile",
+    ]
+
+    // MARK: Approval by MFA code, for when nobody is at the Mac
+
+    /// Keeps a copy of the key that opens without Touch ID, for `approve`. It is safe only
+    /// because AWS refuses that key without a code from your phone, so this needs `mfa enforce`
+    /// first and an MFA device that is not this Mac's.
+    public func enableRemote(_ profile: String, serial: String?) throws -> String {
+        let master = try unlock(profile, reason: "let a code from your phone approve AWS profile “\(profile)” when you are away from the Mac")
+        guard meta.all()[profile]?.mfaEnforced == true, master.mfaSerial != nil else {
+            throw ZSPError.invalid("Run aws-cli-zsp mfa setup and mfa enforce for \(profile) first. Without them, the copy remote approval keeps would work with no code at all.")
+        }
+        let session = try adminCredentials(master)
+        let devices = try aws.listMFADevices(session).filter { $0 != master.mfaSerial }
+        let chosen: String
+        if let serial {
+            guard devices.contains(serial) else { throw ZSPError.invalid("\(serial) is not an MFA device of this IAM user. Its devices: \(devices.joined(separator: ", "))") }
+            chosen = serial
+        } else if devices.count == 1 {
+            chosen = devices[0]
+        } else if devices.isEmpty {
+            throw ZSPError.invalid("This IAM user has no MFA device besides this Mac's. Add your phone in the IAM console (Security credentials, Assign MFA device), then run this again.")
+        } else {
+            throw ZSPError.invalid("This IAM user has several MFA devices; choose one with --serial: \(devices.joined(separator: ", "))")
+        }
+        try store.write(.remote, profile, try ZSPJSON.encoder.encode(master.withoutMFASeed))
+        try meta.update(profile) { $0?.remoteSerial = chosen }
+        try audit.append("remote.enabled", profile: profile, detail: ["device": chosen])
+        return chosen
+    }
+
+    public func disableRemote(_ profile: String) throws {
+        try store.delete(.remote, profile)
+        try meta.update(profile) { $0?.remoteSerial = nil }
+        try audit.append("remote.disabled", profile: profile)
+    }
+
+    /// Issues a session approved by a code from your phone, with no Touch ID: what Claude Code
+    /// runs over Remote Control after asking you for the code. AWS checks the code.
+    public func approve(_ profile: String, code: String, requester: String) throws -> AWSCredentials {
+        guard TOTP.isCode(code) else { throw ZSPError.invalid("an MFA code is 6 digits") }
+        guard let serial = meta.all()[profile]?.remoteSerial, let data = try store.read(.remote, profile) else {
+            throw ZSPError.invalid("Approval by MFA code is not set up for “\(profile)”. At the Mac: aws-cli-zsp remote enable --profile \(profile)")
+        }
+        let key = try ZSPJSON.decoder.decode(MasterKey.self, from: data)
+        try paths.ensureSupportDir()
+        return try withFileLock(paths.lock("session-\(profile)")) {
             do {
-                session = try aws.getSessionToken(master.credentials, durationSeconds: seconds)
+                return try issue(profile, key, seconds: Settings.load(paths).duration(for: profile),
+                                 mfa: MFACode(serial: serial, code: code), approvedBy: "mfa-code", requester: requester)
             } catch {
-                _ = try? audit.append("session.failed", profile: profile, ok: false, detail: ["error": error.localizedDescription],
-                                  requester: requester)
+                _ = try? audit.append("auth.denied", profile: profile, ok: false, detail: ["for": "approval by MFA code"], requester: requester)
                 throw error
             }
-            try store.write(.session, profile, try ZSPJSON.encoder.encode(session))
-            try audit.append("session.issued", profile: profile,
-                             detail: ["keyId": maskKeyId(master.accessKeyId), "seconds": String(seconds),
-                                      "expires": session.expiration.map(iso8601) ?? "?"],
-                             requester: requester)
-            try? meta.update(profile) {
-                $0?.lastUsedAt = t
-                $0?.lastRequester = requester
-                $0?.sessionExpiresAt = session.expiration
-            }
-            return session
         }
     }
 
@@ -298,7 +499,7 @@ public final class Vault {
     /// tell whether a leaked key was used by someone else.
     public func inspect(_ profile: String) throws -> InspectReport {
         let master = try unlock(profile, reason: "look up the AWS key for profile “\(profile)”")
-        let c = master.credentials
+        let c = try adminCredentials(master)
         let identity = try aws.getCallerIdentity(c)
         var keys: [KeyReport] = []
         if master.sessionToken == nil {
@@ -326,15 +527,18 @@ public final class Vault {
         let master = try unlock(profile, reason: "rotate the AWS access key for profile “\(profile)”")
         guard master.sessionToken == nil else { throw ZSPError.invalid("“\(profile)” holds temporary credentials: there is no key to rotate") }
         let old = master.credentials
-        let keys = try aws.listAccessKeys(old)
+        // IAM calls go through an MFA session when the key has MFA here: required once MFA is enforced.
+        let admin = try adminCredentials(master)
+        let keys = try aws.listAccessKeys(admin)
         if keys.count >= 2 {
             let other = keys.first { $0.accessKeyId != old.accessKeyId }.map { maskKeyId($0.accessKeyId) } ?? "another key"
             throw ZSPError.invalid("This IAM user already has two access keys (the other is \(other)). AWS allows two at most: delete the one you no longer use, then rotate again.")
         }
-        let fresh = try aws.createAccessKey(old)
-        // Stored before anything else happens: the new secret is never only in memory.
+        let fresh = try aws.createAccessKey(admin)
+        // Stored before anything else happens: the new secret is never only in memory. The
+        // MFA device belongs to the user, not the key, so it carries over.
         try writeMaster(MasterKey(accessKeyId: fresh.accessKeyId, secretAccessKey: fresh.secretAccessKey, sessionToken: nil,
-                                  importedAt: now(), source: "rotated"), profile)
+                                  importedAt: now(), source: "rotated", mfaSerial: master.mfaSerial, mfaSeed: master.mfaSeed), profile)
         _ = try? audit.append("key.created", profile: profile, detail: ["keyId": maskKeyId(fresh.accessKeyId)])
         try meta.update(profile) {
             $0?.previousKeyId = old.accessKeyId
@@ -344,9 +548,12 @@ public final class Vault {
         }
         do {
             _ = try retryingNewKey { try aws.getCallerIdentity(fresh) }
+            // Without MFA the new key retires the old one; with it, the MFA session from the old key
+            // does (the new key alone is refused once MFA is enforced).
+            let retirer = master.mfaSeed == nil ? fresh : admin
             try retryingNewKey {
-                if keepOld { try aws.updateAccessKey(fresh, keyId: old.accessKeyId, active: false) }
-                else { try aws.deleteAccessKey(fresh, keyId: old.accessKeyId) }
+                if keepOld { try aws.updateAccessKey(retirer, keyId: old.accessKeyId, active: false) }
+                else { try aws.deleteAccessKey(retirer, keyId: old.accessKeyId) }
             }
         } catch {
             _ = try? audit.append("key.rotate.failed", profile: profile, ok: false,
@@ -384,12 +591,14 @@ public final class Vault {
     public func revokeSessions(_ profile: String) throws -> Date {
         let master = try unlock(profile, reason: "revoke every session issued for AWS profile “\(profile)”")
         guard master.sessionToken == nil else { throw ZSPError.invalid("“\(profile)” holds temporary credentials: they cannot revoke themselves") }
-        let identity = try aws.getCallerIdentity(master.credentials)
+        let admin = try adminCredentials(master)
+        let identity = try aws.getCallerIdentity(admin)
         guard let user = Self.userName(fromArn: identity.arn) else {
             throw ZSPError.invalid("\(identity.arn) is not an IAM user, so its sessions cannot be revoked with a user policy")
         }
+        // The MFA session above is cut off with the rest; this is its last call.
         let cutoff = now()
-        try aws.putUserPolicy(master.credentials, userName: user, policyName: Self.revokePolicyName, document: Self.revokePolicy(before: cutoff))
+        try aws.putUserPolicy(admin, userName: user, policyName: Self.revokePolicyName, document: Self.revokePolicy(before: cutoff))
         try store.delete(.session, profile)
         try meta.update(profile) {
             $0?.sessionsRevokedAt = cutoff
@@ -415,7 +624,7 @@ public final class Vault {
     /// the only credential zsp had: use the IAM console.
     public func disableKey(_ profile: String) throws {
         let master = try unlock(profile, reason: "deactivate the AWS access key for profile “\(profile)”")
-        try aws.updateAccessKey(master.credentials, keyId: master.accessKeyId, active: false)
+        try aws.updateAccessKey(try adminCredentials(master), keyId: master.accessKeyId, active: false)
         try store.delete(.session, profile)
         try meta.update(profile) { $0?.keyStatus = "Inactive"; $0?.sessionExpiresAt = nil }
         try audit.append("key.disabled", profile: profile, detail: ["keyId": maskKeyId(master.accessKeyId)])
@@ -424,7 +633,7 @@ public final class Vault {
     /// Deletes the key in AWS, then everywhere locally.
     public func deleteKey(_ profile: String) throws {
         let master = try unlock(profile, reason: "delete the AWS access key for profile “\(profile)”")
-        try aws.deleteAccessKey(master.credentials, keyId: master.accessKeyId)
+        try aws.deleteAccessKey(try adminCredentials(master), keyId: master.accessKeyId)
         try audit.append("key.deleted", profile: profile, detail: ["keyId": maskKeyId(master.accessKeyId)])
         try removeLocal(profile)
     }
@@ -439,6 +648,7 @@ public final class Vault {
     func removeLocal(_ profile: String) throws {
         try store.delete(.master, profile)
         try store.delete(.session, profile)
+        try store.delete(.remote, profile)
         try meta.update(profile) { $0 = nil }
         try unwireConfig(profile)
     }
