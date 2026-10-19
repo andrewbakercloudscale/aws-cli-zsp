@@ -28,14 +28,18 @@ and adds:
 
 ## What it looks like
 
-| Touch ID before a key is used | Keys, sessions and who used them | Hash-chained audit trail |
-|---|---|---|
-| <img src="docs/images/touch-id.png" width="260" alt="Touch ID dialog: AWS CLI: ZSP is trying to unlock your bedrock AWS key for a 1-hour session, for aws sts get-caller-identity"> | <img src="docs/images/inuse.png" width="300" alt="In use tab"> | <img src="docs/images/audit.png" width="300" alt="Audit trail tab"> |
+| Overview: status, health checks and tests | Keys: test, check in AWS, rotate, revoke |
+|---|---|
+| <img src="docs/images/overview.png" width="400" alt="Overview tab"> | <img src="docs/images/keys.png" width="400" alt="Keys tab"> |
+| **MFA & phone: the three steps per key** | **Onboarding: pick what moves, and whether new keys move automatically** |
+| <img src="docs/images/mfa.png" width="400" alt="MFA and phone tab"> | <img src="docs/images/setup.png" width="400" alt="Setup screen"> |
+| **Health checks** | **Touch ID before a key is used** |
+| <img src="docs/images/checks.png" width="400" alt="Health checks"> | <img src="docs/images/touch-id.png" width="300" alt="Touch ID dialog: AWS CLI: ZSP is trying to unlock your bedrock AWS key for a 1-hour session, for aws sts get-caller-identity"> |
 
-A key written to `~/.aws/credentials` turns the shield red until the watcher has moved it
-(seconds), with a button to move it at once:
-
-<img src="docs/images/plaintext-found.png" width="360" alt="Plaintext AWS keys found">
+Every step in this README has a button: **Setup** in the footer re-runs onboarding, **Run
+checks** is `aws-cli-zsp doctor`, **Test Touch ID** / **Test auto-move** / **Verify audit
+chain** exercise each part without touching your keys, and each key's **Test** makes a real
+AWS call with it. The audit trail tab shows every use, with the program that asked.
 
 The panel lives in the menu bar (the shield). If a crowded menu bar hides it behind the notch,
 open **aws-cli-zsp** from Spotlight or run `aws-cli-zsp ui` to get the same panel in a window.
@@ -51,9 +55,14 @@ bash scripts/build-app.sh --install   # the same, then `aws-cli-zsp install`
 1. links `~/.local/bin/aws-cli-zsp`
 2. loads `consulting.cloudscale.zsp.watch`, which runs `aws-cli-zsp import --auto` whenever
    either AWS file changes, and every 5 minutes
-3. starts the menu bar app at login
-4. moves every plaintext key into the vault and adds
-   `credential_process = …/aws-cli-zsp credential-process --profile NAME` to `~/.aws/config`
+3. starts the menu bar app at login, which opens **Setup** the first time: it lists the keys
+   in `~/.aws`, you tick the ones to move, and choose whether keys written later move
+   automatically (the watcher does nothing until you have chosen) and how long a session lasts
+4. for each key moved, adds `credential_process = …/aws-cli-zsp credential-process --profile NAME`
+   to `~/.aws/config`
+
+Without the UI: `aws-cli-zsp setup --move default,bedrock --keep personal --auto on --duration 1h`.
+Unticked keys stay in plain text and are never moved automatically.
 
 From then on, `aws --profile bedrock s3 ls` works as before. The first command each hour shows
 "AWS CLI: ZSP is trying to unlock your “bedrock” AWS key for a 1-hour session, for aws s3 ls";
@@ -181,7 +190,8 @@ mint a new key, and **Revoke sessions** kills every one issued so far.
 ## MFA, and approving from your phone
 
 Touch ID protects the key on this Mac, but AWS does not know about it: a copy of the key
-would work anywhere. Two commands make AWS itself demand MFA, without adding a step locally:
+would work anywhere. The **MFA & phone** tab walks through three steps per key, each a button; the same steps as
+commands make AWS itself demand MFA, without adding a step locally:
 
 ```bash
 aws-cli-zsp mfa setup   --profile bedrock   # this Mac becomes a virtual MFA device for the key's IAM user
@@ -241,6 +251,11 @@ and `iam:PutUserPolicy` on itself for these commands.
 ## Commands
 
 ```
+aws-cli-zsp setup [--move P,..] [--keep P,..] [--auto on|off] [--duration 1h]
+                                              choose what moves and whether new keys move automatically
+aws-cli-zsp doctor                            every check that must pass to be protected, no prompt
+aws-cli-zsp test --profile P                  a real AWS call (GetCallerIdentity) with the key
+aws-cli-zsp selftest-watcher                  write AWS's example key to ~/.aws and time the move
 aws-cli-zsp list                              keys in the vault, sessions, last use and by whom
 aws-cli-zsp scan                              plaintext keys left in ~/.aws (exit 1 if any)
 aws-cli-zsp add --profile P                   type a key in, secret hidden; it never touches a file

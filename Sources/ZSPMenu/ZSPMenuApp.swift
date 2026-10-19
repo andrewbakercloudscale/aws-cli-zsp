@@ -35,12 +35,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func showWindow() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 760),
                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             w.title = "AWS CLI: ZSP"
             w.isReleasedWhenClosed = false
             w.delegate = self
-            let host = NSHostingView(rootView: ContentView().environmentObject(model))
+            // An opaque background: without one, a page whose views don't fill the window comes out
+            // transparent, and dark text on it reads as black on black.
+            NSApp.appearance = NSAppearance(named: .aqua)
+            let host = NSHostingView(rootView: ContentView().environmentObject(model)
+                .background(Color(nsColor: .windowBackgroundColor)))
             host.sizingOptions = [.preferredContentSize]   // the window follows the panel's height
             w.contentView = host
             w.center()
@@ -69,14 +73,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         MainActor.assumeIsolated {
             let model = Model()
             if args.contains("--audit") { model.tab = .audit }
+            if args.contains("--keys") { model.tab = .keys }
+            if args.contains("--mfa") { model.tab = .protection }
+            if args.contains("--setup") { model.page = .setup }
+            if args.contains("--about") { model.page = .about }
+            if args.contains("--checks") { model.runChecks() }
             // An offscreen window rather than ImageRenderer, which draws AppKit-backed controls
             // (pickers, menus, scroll views) as placeholders.
-            let host = NSHostingView(rootView: ContentView().environmentObject(model))
-            let window = NSWindow(contentRect: NSRect(x: -10_000, y: 0, width: 460, height: 700), styleMask: [.borderless],
+            // An opaque background: without one, a page whose views don't fill the window comes out
+            // transparent, and dark text on it reads as black on black.
+            NSApp.appearance = NSAppearance(named: .aqua)
+            let host = NSHostingView(rootView: ContentView().environmentObject(model)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(x: -10_000, y: 0, width: 640, height: 900), styleMask: [.borderless],
                                   backing: .buffered, defer: false)
             window.contentView = host
             window.orderFrontRegardless()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 window.setContentSize(host.fittingSize)
                 host.layoutSubtreeIfNeeded()
                 if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {

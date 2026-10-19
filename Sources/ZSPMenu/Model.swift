@@ -3,7 +3,16 @@ import SwiftUI
 import UserNotifications
 import ZSPCore
 
-enum Tab: Hashable { case inUse, audit }
+/// One line of `aws-cli-zsp doctor`.
+struct CheckResult: Decodable, Identifiable, Equatable {
+    let name: String
+    let ok: Bool
+    let detail: String
+    let warn: Bool
+    var id: String { name }
+}
+
+enum Page: Equatable { case main, setup, about }
 
 struct Banner: Equatable {
     var text: String
@@ -14,6 +23,11 @@ struct Banner: Equatable {
 /// which zsp asks for itself.
 enum Action: CaseIterable {
     case inspect, clearSession, rotate, revoke, disable, delete, forget
+    /// The three steps to MFA enforced by AWS and approval from your phone, in order.
+    case mfaSetup, mfaEnforce, remoteEnable, remoteDisable
+
+    /// What the ⋯ menu lists; the MFA steps have their own buttons on the row.
+    static let keyMenu: [Action] = [.inspect, .clearSession, .rotate, .revoke, .disable, .delete, .forget]
 
     var title: String {
         switch self {
@@ -24,6 +38,10 @@ enum Action: CaseIterable {
         case .disable: return "Deactivate key…"
         case .delete: return "Delete key…"
         case .forget: return "Remove from this Mac…"
+        case .mfaSetup: return "Set up MFA…"
+        case .mfaEnforce: return "Require MFA…"
+        case .remoteEnable: return "Allow phone approval…"
+        case .remoteDisable: return "Turn off phone approval…"
         }
     }
 
@@ -36,6 +54,10 @@ enum Action: CaseIterable {
         case .disable: return "pause.circle"
         case .delete: return "trash"
         case .forget: return "minus.circle"
+        case .mfaSetup: return "lock.iphone"
+        case .mfaEnforce: return "checkmark.shield"
+        case .remoteEnable: return "iphone.radiowaves.left.and.right"
+        case .remoteDisable: return "iphone.slash"
         }
     }
 
@@ -53,10 +75,18 @@ enum Action: CaseIterable {
             return "Deletes the key in AWS, then removes it from the vault and from ~/.aws/config.\n\nThis cannot be undone."
         case .forget:
             return "Removes the key from this Mac only. AWS still has it and it keeps working wherever else it is used.\n\nIf this was your only copy of the secret, it is gone for good."
+        case .mfaSetup:
+            return "Step 1 of 3. Adds this Mac as a virtual MFA device for the IAM user behind “\(p)”, and seals its secret with the key in the vault.\n\nFrom then on every session carries MFA, still with one Touch ID. Nothing else changes yet. The IAM user needs iam:CreateVirtualMFADevice and iam:EnableMFADevice on itself. Touch ID is asked first."
+        case .mfaEnforce:
+            return "Step 2 of 3. Attaches a policy (aws-cli-zsp-require-mfa) to the IAM user: AWS then refuses everything the key does without MFA, so a copy of the key alone is worthless.\n\nAnything that uses this key directly rather than through AWS CLI: ZSP (CI, another machine, a script with the key in it) stops working. To undo, delete that inline policy in the IAM console. Touch ID is asked first."
+        case .remoteEnable:
+            return "Step 3 of 3. Lets a 6-digit code from your phone's authenticator app approve a session when nobody is at the Mac, for example while you drive Claude Code with Remote Control: Claude asks you for the code.\n\nYour phone must already be an MFA device on this IAM user (IAM console, Security credentials, Assign MFA device). A copy of the key without this Mac's MFA secret is kept for it, which AWS refuses without your phone's code. Touch ID is asked first."
+        case .remoteDisable:
+            return "Deletes the copy of the key kept for phone approval. Away from the Mac, AWS commands for “\(p)” then wait until you are back at it.\n\nNothing changes in AWS: MFA stays required."
         }
     }
 
-    var destructive: Bool { [.disable, .delete, .forget].contains(self) }
+    var destructive: Bool { [.disable, .delete, .forget, .mfaEnforce].contains(self) }
 
     func args(_ p: String) -> [String] {
         switch self {
@@ -67,6 +97,10 @@ enum Action: CaseIterable {
         case .disable: return ["disable-key", "--profile", p, "--yes"]
         case .delete: return ["delete-key", "--profile", p, "--yes"]
         case .forget: return ["forget", "--profile", p, "--yes"]
+        case .mfaSetup: return ["mfa", "setup", "--profile", p]
+        case .mfaEnforce: return ["mfa", "enforce", "--profile", p, "--yes"]
+        case .remoteEnable: return ["remote", "enable", "--profile", p]
+        case .remoteDisable: return ["remote", "disable", "--profile", p]
         }
     }
 }
@@ -80,7 +114,19 @@ final class Model: ObservableObject {
     @Published var busy: String?
     @Published var banner: Banner?
     @Published var inspect: InspectReport?
-    @Published var tab = Tab.inUse
+    @Published var tab = Tab.overview
+    @Published var page = Page.main
+    @Published var checks: [CheckResult] = []
+    @Published var checking = false
+    @Published var settings = Settings()
+    /// Last test result per profile: what AWS said, or why it failed.
+    @Published var tests: [String: Banner] = [:]
+
+    static var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev" }
+
+    var exposed: [Finding] { findings.filter { !settings.kept.contains($0.profile) } }
+    var keptPlaintext: [Finding] { findings.filter { settings.kept.contains($0.profile) } }
+    var needsSetup: Bool { settings.onboarded != true && profiles.isEmpty }
     @Published var hideRoutine = true
 
     let paths = Paths.standard()
@@ -98,7 +144,7 @@ final class Model: ObservableObject {
 
     var statusSymbol: String {
         if busy != nil { return "hourglass" }
-        if !findings.isEmpty || verification?.intact == false { return "exclamationmark.shield.fill" }
+        if !exposed.isEmpty || verification?.intact == false { return "exclamationmark.shield.fill" }
         return "lock.shield"
     }
 
@@ -114,6 +160,8 @@ final class Model: ObservableObject {
     func refresh(initial: Bool = false) {
         profiles = Vault.statuses(meta: MetadataStore(paths: paths).all(), keychain: nil)
         findings = Scanner.scan(paths)
+        settings = Settings.load(paths)
+        if initial && needsSetup { page = .setup }
         let entries = AuditLog(paths: paths, anchor: nil).entries(limit: 300)
         if !initial {
             for e in entries where e.seq > lastSeq {
@@ -173,8 +221,13 @@ final class Model: ObservableObject {
 
     /// Runs zsp with --json off the main thread and hands back its decoded result.
     func call<T: Decodable>(_ args: [String], label: String, as: T.Type, then: @escaping (T?) -> String?) {
+        call(args, label: label, as: T.self, banner: true) { r, _ in then(r) }
+    }
+
+    /// With `banner: false` the caller shows the outcome itself; `then` gets the error text on failure.
+    func call<T: Decodable>(_ args: [String], label: String, as: T.Type, banner: Bool, then: @escaping (T?, String?) -> String?) {
         busy = label
-        banner = nil
+        self.banner = nil
         let path = cliPath
         Task.detached {
             let r = Self.exec(path, args + ["--json"])
@@ -182,13 +235,15 @@ final class Model: ObservableObject {
             await MainActor.run {
                 self.busy = nil
                 if let env, env.ok {
-                    if let text = then(env.result) { self.banner = Banner(text: text, isError: false) }
+                    if let text = then(env.result, nil), banner { self.banner = Banner(text: text, isError: false) }
                 } else {
-                    let why = env?.error ?? (r.err.isEmpty ? "aws-cli-zsp exited with \(r.status)" : r.err)
-                    self.banner = Banner(text: why.trimmingCharacters(in: .whitespacesAndNewlines), isError: true)
+                    let why = (env?.error ?? (r.err.isEmpty ? "aws-cli-zsp exited with \(r.status)" : r.err)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    _ = then(nil, why)
+                    if banner { self.banner = Banner(text: why, isError: true) }
                 }
                 self.refresh()
                 self.verify()
+                if !self.checks.isEmpty { self.runChecks() }
             }
         }
     }
@@ -202,8 +257,64 @@ final class Model: ObservableObject {
         }
     }
 
+    // MARK: Checks and tests
+
+    func runChecks() {
+        checking = true
+        let path = cliPath
+        Task.detached {
+            let r = Self.exec(path, ["doctor", "--json"])
+            let env = Self.decode(Envelope<[CheckResult]>.self, r.out)
+            await MainActor.run {
+                self.checking = false
+                self.checks = env?.result ?? [CheckResult(name: "aws-cli-zsp doctor", ok: false, detail: r.err.isEmpty ? "did not run" : r.err, warn: false)]
+            }
+        }
+    }
+
+    struct TestResult: Decodable { let arn: String; let usedCachedSession: Bool }
+
+    func test(_ profile: String) {
+        tests[profile] = nil
+        call(["test", "--profile", profile], label: "Testing \(profile)…", as: TestResult.self, banner: false) { [weak self] (r: TestResult?, error: String?) -> String? in
+            if let r {
+                self?.tests[profile] = Banner(text: "Works: \(r.arn)\(r.usedCachedSession ? " (cached session)" : " (new session, Touch ID)")", isError: false)
+            } else {
+                self?.tests[profile] = Banner(text: error ?? "failed", isError: true)
+            }
+            return nil
+        }
+    }
+
+    func testTouchID() {
+        call(["check-touch-id"], label: "Waiting for Touch ID…", as: Ignored.self) { _ in "Touch ID works for AWS CLI: ZSP." }
+    }
+
+    struct WatcherResult: Decodable { let moved: Bool; let seconds: Double; let autoMove: Bool }
+
+    func testWatcher() {
+        call(["selftest-watcher"], label: "Writing a test key to ~/.aws…", as: WatcherResult.self) { r in
+            guard let r else { return nil }
+            if r.moved { return "Automatic move works: a test key (AWS's published example) was moved out of ~/.aws/credentials in \(String(format: "%.1f", r.seconds)) s, then removed." }
+            return r.autoMove ? "The watcher did not move the test key." : "Automatic move is off, so the test key stayed where it was written (removed again)."
+        }
+    }
+
+    /// The setup screen's choices, in one `aws-cli-zsp setup` call.
+    func finishSetup(move: [String], keep: [String], autoMove: Bool, seconds: Int) {
+        var args = ["setup", "--auto", autoMove ? "on" : "off", "--duration", "\(seconds)s"]
+        if !move.isEmpty { args += ["--move", move.joined(separator: ",")] }
+        if !keep.isEmpty { args += ["--keep", keep.joined(separator: ",")] }
+        call(args, label: "Setting up…", as: ImportReport.self) { [weak self] r in
+            self?.page = .main
+            self?.tab = .overview
+            let moved = r?.imported ?? []
+            return moved.isEmpty ? "Set up. Nothing was moved." : "Set up. Moved \(moved.joined(separator: ", ")) into the vault."
+        }
+    }
+
     func importNow() {
-        call(["import"], label: "Moving keys…", as: ImportReport.self) { r in
+        call(["import", "--profiles", exposed.map(\.profile).joined(separator: ",")], label: "Moving keys…", as: ImportReport.self) { r in
             guard let r else { return nil }
             return r.imported.isEmpty ? "No complete key pairs to move yet." : "Moved \(r.imported.joined(separator: ", ")) into the vault."
         }
@@ -229,6 +340,26 @@ final class Model: ObservableObject {
             call(action.args(profile), label: "\(action.title.replacingOccurrences(of: "…", with: ""))…", as: Ignored.self) { _ in
                 "\(action.title.replacingOccurrences(of: "…", with: "")): done for \(profile)."
             }
+        }
+    }
+
+    /// Approval by phone code from the panel: the same as `aws-cli-zsp approve`, for when Touch
+    /// ID is not an option (a broken sensor, a closed lid on a monitor without Touch ID).
+    func approveWithCode(_ profile: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "Approve “\(profile)” with a code"
+        a.informativeText = "Type the 6-digit code from your phone's authenticator app. AWS checks it and issues a session; no Touch ID."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        field.placeholderString = "123456"
+        a.accessoryView = field
+        a.window.initialFirstResponder = field
+        a.addButton(withTitle: "Approve")
+        a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let code = field.stringValue.filter(\.isNumber)
+        call(["approve", "--profile", profile, code], label: "Asking AWS…", as: Ignored.self) { _ in
+            "Approved: “\(profile)” has a session."
         }
     }
 

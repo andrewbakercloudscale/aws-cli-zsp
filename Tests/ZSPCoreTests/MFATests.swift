@@ -116,3 +116,27 @@ final class MFATests: XCTestCase {
         XCTAssertNil(copy?.mfaSeed)
     }
 }
+
+final class SetupTests: XCTestCase {
+    func testImportOnlyAndSkip() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        s.write(credentials: screenshotCredentials)
+        let r = try s.vault.importPlaintext(origin: "test", only: ["bedrock", "default"], skip: ["default"])
+        XCTAssertEqual(r.imported, ["bedrock"])
+        XCTAssertEqual(Set(Scanner.scan(s.paths).map(\.profile)), ["default", "personal"], "the others stay where they were")
+    }
+
+    func testOldSettingsFilesStillLoad() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        try s.paths.ensureSupportDir()
+        try #"{"profileSessionSeconds":{"bedrock":43200},"sessionSeconds":1800}"#.write(to: s.paths.settingsFile, atomically: true, encoding: .utf8)
+        let settings = Settings.load(s.paths)
+        XCTAssertEqual(settings.sessionSeconds, 1800, "0.2 settings keep their values")
+        XCTAssertFalse(settings.watching, "not set up yet: the watcher waits")
+        var on = settings
+        on.onboarded = true
+        XCTAssertTrue(on.watching)
+        on.autoImport = false
+        XCTAssertFalse(on.watching)
+    }
+}

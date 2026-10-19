@@ -66,8 +66,19 @@ public struct Settings: Codable, Equatable, Sendable {
 
     public var sessionSeconds: Int = 3600
     public var profileSessionSeconds: [String: Int] = [:]
+    /// The watcher moves new keys in by itself. Optional, like the two below, so settings files
+    /// written before they existed still load.
+    public var autoImport: Bool?
+    /// Profiles you chose to leave in plain text: never moved automatically.
+    public var keepPlaintext: [String]?
+    /// Setup has run (in the app, or `aws-cli-zsp setup`). Until then the watcher moves nothing,
+    /// so the first look at your files is yours.
+    public var onboarded: Bool?
 
     public init() {}
+
+    public var watching: Bool { onboarded == true && autoImport != false }
+    public var kept: Set<String> { Set(keepPlaintext ?? []) }
 
     public func duration(for profile: String) -> Int {
         min(max(profileSessionSeconds[profile] ?? sessionSeconds, Self.minSeconds), Self.maxSeconds)

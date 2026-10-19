@@ -35,6 +35,13 @@ Rotate and revoke
   aws-cli-zsp delete-key --profile P           delete the key in AWS and on this Mac
   aws-cli-zsp forget --profile P               remove the key from this Mac only
 
+Setup and tests
+  aws-cli-zsp setup [--move a,b] [--keep c] [--auto on|off] [--duration 1h]   first run: what moves, what stays, auto-move
+  aws-cli-zsp import [--profiles a,b] [--all]   move keys now (profiles kept in plain text stay unless named or --all)
+  aws-cli-zsp doctor                           check everything, with no prompt
+  aws-cli-zsp test --profile P                 a real AWS call with the profile (Touch ID if no session)
+  aws-cli-zsp selftest-watcher                 write AWS's example key to ~/.aws and time the automatic move
+
 Audit and setup
   aws-cli-zsp audit [--limit N] [--verify]     the hash-chained audit trail
   aws-cli-zsp migrate                          move keys stored by 0.1.x into the Secure Enclave vault
@@ -54,7 +61,7 @@ struct Options {
     var flags: Set<String> = []
     var rest: [String] = []
 
-    static let takesValue: Set<String> = ["--profile", "--limit", "--access-key-id", "--serial", "--name"]
+    static let takesValue: Set<String> = ["--profile", "--limit", "--access-key-id", "--serial", "--name", "--profiles", "--move", "--keep", "--auto", "--duration"]
 
     init(_ argv: [String]) {
         var i = 0
@@ -182,9 +189,24 @@ func run(_ body: () throws -> Void) {
 
 // MARK: Commands
 
+func list(_ key: String) -> [String] {
+    (opts.values[key] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+}
+
 func cmdImport() throws {
     let auto = opts.flags.contains("--auto")
-    let report = try makeVault().importPlaintext(origin: auto ? "watcher" : "aws-cli-zsp import")
+    var settings = Settings.load(paths)
+    // Keys moved in before setup existed (0.2.x): that was setup, with the watcher on.
+    if settings.onboarded == nil, !MetadataStore(paths: paths).all().isEmpty {
+        settings.onboarded = true
+        try settings.save(paths)
+    }
+    if auto && !settings.watching { return }
+    let only = list("--profiles")
+    // Profiles you chose to keep in plain text stay put, unless you name them.
+    let report = try makeVault().importPlaintext(origin: auto ? "watcher" : "aws-cli-zsp import",
+                                                  only: only.isEmpty ? nil : Set(only),
+                                                  skip: only.isEmpty && !opts.flags.contains("--all") ? settings.kept : [])
     var lines: [String] = []
     for p in report.imported { lines.append("moved \(p) into the vault\(report.replaced.contains(p) ? " (replaced its previous key)" : "")") }
     for f in report.incomplete { lines.append("waiting: \(f.profile) in \(f.file) has only half a key pair") }
@@ -482,6 +504,151 @@ func cmdUI() throws {
     if p.terminationStatus != 0 { fail("open failed (\(p.terminationStatus))") }
 }
 
+// MARK: Setup, checks and tests
+
+/// The first run: which keys move, which stay in plain text, whether the watcher moves new
+/// ones by itself, and how long sessions last. The app's setup screen runs this.
+func cmdSetup() throws {
+    let move = list("--move"), keep = list("--keep")
+    var s = Settings.load(paths)
+    if let d = opts.values["--duration"] {
+        guard let seconds = parseDuration(d), (Settings.minSeconds...Settings.maxSeconds).contains(seconds) else { fail("sessions last 15m to 12h") }
+        s.sessionSeconds = seconds
+    }
+    if let a = opts.values["--auto"] {
+        guard ["on", "off"].contains(a) else { fail("--auto on|off") }
+        s.autoImport = a == "on"
+    }
+    s.keepPlaintext = Array(s.kept.union(keep).subtracting(move)).sorted()
+    s.onboarded = true
+    try s.save(paths)
+    let vault = makeVault()
+    let report = move.isEmpty ? ImportReport() : try vault.importPlaintext(origin: "aws-cli-zsp setup", only: Set(move))
+    let watcher = try setWatcher(s.watching)
+    try vault.audit.append("setup.done", detail: ["moved": report.imported.joined(separator: ","), "kept": (s.keepPlaintext ?? []).joined(separator: ","),
+                                                  "autoMove": s.autoImport == false ? "off" : "on", "seconds": String(s.sessionSeconds)])
+    var lines = report.imported.map { "moved \($0) into the vault" }
+    if !(s.keepPlaintext ?? []).isEmpty { lines.append("left in plain text by choice: \((s.keepPlaintext ?? []).joined(separator: ", "))") }
+    lines.append(s.watching ? "new keys written to ~/.aws are moved in automatically (\(watcher))" : "new keys are NOT moved automatically: the menu bar shows them in red")
+    lines.append("sessions last \(s.sessionSeconds / 60) minutes")
+    done(report, lines.joined(separator: "\n"))
+}
+
+/// Loads or unloads the watcher agent. Returns what it did.
+@discardableResult
+func setWatcher(_ on: Bool) throws -> String {
+    // A sandbox (ZSP_HOME set) must never replace or stop the real login watcher.
+    if ProcessInfo.processInfo.environment["ZSP_HOME"] != nil { return "watcher left alone: ZSP_HOME is set (sandbox)" }
+    if !on {
+        _ = launchctl(["bootout", "gui/\(getuid())/\(watchLabel)"])
+        return "watcher stopped"
+    }
+    guard selfPath().contains(".app/Contents/Helpers/") else { return "watcher not loaded: run from the app bundle" }
+    try loadWatcher(bin: selfPath())
+    return "watcher running"
+}
+
+struct Check: Encodable {
+    let name: String
+    let ok: Bool
+    let detail: String
+    /// Not a failure, but worth knowing (auto-move off, nobody at the Mac).
+    var warn = false
+}
+
+func agentLoaded(_ label: String) -> Bool { launchctl(["print", "gui/\(getuid())/\(label)"]) == 0 }
+
+/// Everything that has to be true for aws-cli-zsp to protect you, checked without a prompt.
+func cmdDoctor() {
+    let vault = makeVault()
+    let s = Settings.load(paths)
+    let profiles = vault.list()
+    var checks: [Check] = []
+    checks.append(Check(name: "Secure Enclave", ok: EnclaveStore.isAvailable,
+                        detail: EnclaveStore.isAvailable ? "available: keys are sealed to this Mac's chip" : "not available on this Mac"))
+    let missing = profiles.filter { $0.inKeychain == false }.map(\.profile)
+    checks.append(Check(name: "Keys in the vault", ok: missing.isEmpty && !profiles.isEmpty,
+                        detail: profiles.isEmpty ? "no keys yet" : missing.isEmpty ? "\(profiles.count) sealed: \(profiles.map(\.profile).joined(separator: ", "))"
+                            : "not in the vault: \(missing.joined(separator: ", ")) (run aws-cli-zsp migrate)"))
+    let findings = Scanner.scan(paths)
+    let exposed = findings.filter { !s.kept.contains($0.profile) }
+    checks.append(Check(name: "No plaintext keys", ok: exposed.isEmpty,
+                        detail: exposed.isEmpty ? (findings.isEmpty ? "none in ~/.aws/credentials or ~/.aws/config" : "only the ones you chose to keep: \(findings.map(\.profile).joined(separator: ", "))")
+                            : "in plain text: \(exposed.map(\.profile).joined(separator: ", "))", warn: exposed.isEmpty && !findings.isEmpty))
+    let text = (try? String(contentsOf: paths.configFile, encoding: .utf8)) ?? ""
+    let config = INIDocument(text)
+    let bin = selfPath()
+    let unwired = profiles.filter { p in
+        let cp = config.value("credential_process", in: AWSFiles.configSection(for: p.profile)) ?? ""
+        return !cp.contains(bin) || !cp.contains("credential-process")
+    }.map(\.profile)
+    checks.append(Check(name: "AWS CLI wired to the vault", ok: unwired.isEmpty,
+                        detail: unwired.isEmpty ? "every profile's credential_process runs this aws-cli-zsp" : "not wired: \(unwired.joined(separator: ", ")) (run aws-cli-zsp install)"))
+    let watcher = agentLoaded(watchLabel)
+    checks.append(Check(name: "Automatic move", ok: !s.watching || watcher,
+                        detail: !s.watching ? "off: new keys stay where they are written until you move them" : watcher ? "on: the watcher moves new keys within seconds" : "on, but the watcher is not running (run aws-cli-zsp install)",
+                        warn: !s.watching))
+    checks.append(Check(name: "Menu bar app at login", ok: agentLoaded(menuLabel), detail: agentLoaded(menuLabel) ? "starts at login" : "not set to start at login"))
+    let v = AuditLog(paths: paths, anchor: EnclaveStore(dir: paths.supportDir.appendingPathComponent("vault"))).verify()
+    checks.append(Check(name: "Audit trail", ok: v.intact, detail: v.intact ? "chain intact, \(v.entries) entries" : "broken: \(v.problem ?? "?")"))
+    let here = someoneAtMac()
+    checks.append(Check(name: "Someone at the Mac", ok: true,
+                        detail: here ? "yes: a new session asks for Touch ID" : "no: a new session fails at once (phone approval or wait)", warn: !here))
+    let mfa = profiles.filter { $0.mfaEnforced == true }.map(\.profile)
+    checks.append(Check(name: "MFA enforced by AWS", ok: true,
+                        detail: mfa.isEmpty ? "not yet for any profile (MFA & phone tab)" : "for \(mfa.joined(separator: ", "))", warn: mfa.isEmpty))
+    let failed = checks.filter { !$0.ok }.count
+    done(checks, checks.map { "\($0.ok ? ($0.warn ? "!" : "✓") : "✗") \($0.name): \($0.detail)" }.joined(separator: "\n")
+         + "\n\(failed == 0 ? "all checks pass" : "\(failed) check(s) failed")")
+}
+
+/// A real AWS call with the profile's credentials: Touch ID if there is no session.
+func cmdTest() throws {
+    let profile = requireProfile()
+    let vault = makeVault()
+    let hadSession = vault.list().first { $0.profile == profile }?.sessionActive() ?? false
+    let c = try vault.credentials(for: profile, requester: Requester.describe(pid: getpid()), asker: "a test from the AWS CLI: ZSP app")
+    let identity = try AWSQueryService().getCallerIdentity(c)
+    try vault.audit.append("profile.tested", profile: profile, detail: ["arn": identity.arn])
+    struct R: Encodable { let profile: String; let arn: String; let account: String; let expires: Date?; let usedCachedSession: Bool }
+    done(R(profile: profile, arn: identity.arn, account: identity.account, expires: c.expiration, usedCachedSession: hadSession),
+         "\(profile) works: \(identity.arn) (\(hadSession ? "cached session" : "new session"))")
+}
+
+/// Writes AWS's documented example key into ~/.aws/credentials and times the watcher moving
+/// it, then removes it again. Proves automatic moving works without risking a real key.
+func cmdSelfTestWatcher() throws {
+    let s = Settings.load(paths)
+    let vault = makeVault()
+    let profile = Vault.selfTestProfile
+    let original = (try? String(contentsOf: paths.credentialsFile, encoding: .utf8)) ?? ""
+    var doc = INIDocument(original)
+    doc.set("aws_access_key_id", "AKIAIOSFODNN7EXAMPLE", in: profile)
+    doc.set("aws_secret_access_key", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", in: profile)
+    try writeAtomically(doc.text, to: paths.credentialsFile)
+    let start = Date()
+    var moved = false
+    while Date().timeIntervalSince(start) < (s.watching ? 20 : 3) {
+        Thread.sleep(forTimeInterval: 0.5)
+        if !Scanner.scan(paths).contains(where: { $0.profile == profile }) { moved = true; break }
+    }
+    let seconds = Date().timeIntervalSince(start)
+    if !moved {
+        // Take the example key back out of the file ourselves.
+        var d = INIDocument((try? String(contentsOf: paths.credentialsFile, encoding: .utf8)) ?? "")
+        d.remove(keys: AWSFiles.secretKeys, in: profile)
+        d.removeHeaderIfEmpty(profile)
+        try writeAtomically(d.text, to: paths.credentialsFile)
+    }
+    try vault.removeSelfTest()
+    try vault.audit.append("watcher.tested", ok: moved || !s.watching, detail: ["moved": moved ? "yes" : "no", "seconds": String(format: "%.1f", seconds)])
+    struct R: Encodable { let moved: Bool; let seconds: Double; let autoMove: Bool }
+    let text = moved ? "the watcher moved a test key out of ~/.aws/credentials in \(String(format: "%.1f", seconds)) s (removed again)"
+        : s.watching ? "the watcher did NOT move the test key within 20 s: run aws-cli-zsp install" : "automatic move is off, so the test key stayed (removed again)"
+    done(R(moved: moved, seconds: seconds, autoMove: s.watching), text)
+    if !moved && s.watching { exit(1) }
+}
+
 // MARK: Install
 
 let watchLabel = "consulting.cloudscale.zsp.watch"
@@ -531,8 +698,34 @@ func cmdInstall() throws {
     }
     try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: bin)
 
+    try loadWatcher(bin: bin)
+    var menuLoaded = false
+    if FileManager.default.isExecutableFile(atPath: menuBin) {
+        try load(menuLabel, ["Label": menuLabel, "ProgramArguments": [menuBin, "--background"], "RunAtLoad": true,
+                             "LimitLoadToSessionType": "Aqua", "ProcessType": "Interactive", "EnvironmentVariables": agentEnv()])
+        menuLoaded = true
+    }
+    let rewired = try makeVault().rewire()
+    // Before setup has run, nothing moves: the app's setup screen asks first.
+    let s = Settings.load(paths)
+    let report = s.onboarded == true ? try makeVault().importPlaintext(origin: "aws-cli-zsp install", skip: s.kept) : ImportReport()
+    try makeVault().audit.append("zsp.installed", detail: ["binary": bin, "rewired": rewired.joined(separator: ",")])
+    var lines = ["installed: watcher \(watchLabel)\(menuLoaded ? ", menu bar app at login" : ""), \(link.path) → \(bin)"]
+    lines += report.imported.map { "moved \($0) into the vault" }
+    if s.onboarded != true {
+        lines.append("next: open AWS CLI: ZSP to choose which keys to move (or aws-cli-zsp setup --move a,b --auto on)")
+    } else if report.imported.isEmpty { lines.append("no plaintext keys to move") }
+    done(report, lines.joined(separator: "\n"))
+}
+
+func agentEnv() -> [String: String] {
     var env: [String: String] = [:]
     for k in ["AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "ZSP_HOME"] { env[k] = ProcessInfo.processInfo.environment[k] }
+    return env
+}
+
+func loadWatcher(bin: String) throws {
+    let env = agentEnv()
     let awsDir = paths.credentialsFile.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: awsDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     // launchd runs the import whenever either file or the folder changes, and every five
@@ -549,19 +742,6 @@ func cmdInstall() throws {
         "StandardOutPath": paths.watchLog.path,
         "StandardErrorPath": paths.watchLog.path,
     ])
-    var menuLoaded = false
-    if FileManager.default.isExecutableFile(atPath: menuBin) {
-        try load(menuLabel, ["Label": menuLabel, "ProgramArguments": [menuBin, "--background"], "RunAtLoad": true,
-                             "LimitLoadToSessionType": "Aqua", "ProcessType": "Interactive", "EnvironmentVariables": env])
-        menuLoaded = true
-    }
-    let rewired = try makeVault().rewire()
-    let report = try makeVault().importPlaintext(origin: "aws-cli-zsp install")
-    try makeVault().audit.append("zsp.installed", detail: ["binary": bin, "rewired": rewired.joined(separator: ",")])
-    var lines = ["installed: watcher \(watchLabel)\(menuLoaded ? ", menu bar app at login" : ""), \(link.path) → \(bin)"]
-    lines += report.imported.map { "moved \($0) into the vault" }
-    if report.imported.isEmpty { lines.append("no plaintext keys to move") }
-    done(report, lines.joined(separator: "\n"))
 }
 
 func cmdUninstall() throws {
@@ -611,6 +791,10 @@ run {
     case "check-touch-id": try cmdCheckTouchID()
     case "ui", "open": try cmdUI()
     case "mfa": try cmdMFA()
+    case "setup": try cmdSetup()
+    case "doctor", "check": cmdDoctor()
+    case "test": try cmdTest()
+    case "selftest-watcher": try cmdSelfTestWatcher()
     case "remote": try cmdRemote()
     case "approve": try cmdApprove()
     case "uninstall": try cmdUninstall()

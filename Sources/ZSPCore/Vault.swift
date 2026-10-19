@@ -14,6 +14,8 @@ public struct ImportReport: Codable, Equatable, Sendable {
     public var imported: [String] = []
     public var replaced: [String] = []
     public var incomplete: [Finding] = []
+
+    public init() {}
 }
 
 public struct RotateResult: Codable, Equatable, Sendable {
@@ -99,7 +101,8 @@ public final class Vault {
     /// Moves every complete key pair out of both AWS files into the Keychain and points the
     /// profile at zsp. The Keychain write is read back before a line is removed from a file,
     /// so a failure leaves the key where it was, never nowhere.
-    public func importPlaintext(origin: String) throws -> ImportReport {
+    /// `only` limits the move to those profiles; `skip` leaves those where they are.
+    public func importPlaintext(origin: String, only: Set<String>? = nil, skip: Set<String> = []) throws -> ImportReport {
         try paths.ensureSupportDir()
         return try withFileLock(paths.lock("import")) {
             var report = ImportReport()
@@ -110,8 +113,9 @@ public final class Vault {
 
             // Config first: when both files hold a key, the credentials file wins in the AWS
             // CLI, so it must win here too.
-            let fromConfig = try extract(&config, isConfig: true, file: paths.configFile, origin: origin, report: &report)
-            let fromCreds = try extract(&creds, isConfig: false, file: paths.credentialsFile, origin: origin, report: &report)
+            let wanted: (String) -> Bool = { p in !skip.contains(p) && (only?.contains(p) ?? true) }
+            let fromConfig = try extract(&config, isConfig: true, file: paths.configFile, origin: origin, wanted: wanted, report: &report)
+            let fromCreds = try extract(&creds, isConfig: false, file: paths.credentialsFile, origin: origin, wanted: wanted, report: &report)
             for profile in fromConfig + fromCreds {
                 config.set("credential_process", credentialProcess(for: profile), in: AWSFiles.configSection(for: profile))
             }
@@ -131,10 +135,11 @@ public final class Vault {
         }
     }
 
-    func extract(_ doc: inout INIDocument, isConfig: Bool, file: URL, origin: String, report: inout ImportReport) throws -> [String] {
+    func extract(_ doc: inout INIDocument, isConfig: Bool, file: URL, origin: String, wanted: (String) -> Bool,
+                 report: inout ImportReport) throws -> [String] {
         var moved: [String] = []
         for section in doc.sectionNames {
-            guard let profile = isConfig ? AWSFiles.profileName(configSection: section) : section else { continue }
+            guard let profile = isConfig ? AWSFiles.profileName(configSection: section) : section, wanted(profile) else { continue }
             let id = doc.value("aws_access_key_id", in: section) ?? ""
             let secret = doc.value("aws_secret_access_key", in: section) ?? ""
             let token = doc.value("aws_session_token", in: section) ?? doc.value("aws_security_token", in: section) ?? ""
@@ -677,6 +682,15 @@ public final class Vault {
             config.removeHeaderIfEmpty(section)
             if config.text != text { try writeAtomically(config.text, to: paths.configFile) }
         }
+    }
+
+    /// The watcher self-test's profile: a documented AWS example key, never a real one.
+    public static let selfTestProfile = "aws-cli-zsp-selftest"
+
+    /// Removes the self-test profile without Touch ID: its key is AWS's published example.
+    public func removeSelfTest() throws {
+        guard let m = meta.all()[Self.selfTestProfile], m.accessKeyId == "AKIAIOSFODNN7EXAMPLE" else { return }
+        try removeLocal(Self.selfTestProfile)
     }
 
     /// Drops cached sessions so the next command needs Touch ID again. Local only: the
