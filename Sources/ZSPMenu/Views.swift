@@ -245,7 +245,7 @@ struct ChecksCard: View {
                     .help("Shows the Touch ID prompt and unlocks nothing")
                 Button { model.testWatcher() } label: { Label("Test auto-move", systemImage: "arrow.down.doc.fill") }.buttonStyle(.pill(Theme.info))
                     .help("Writes AWS's published example key into ~/.aws/credentials, times the watcher moving it, then removes it")
-                Button { model.verify() } label: { Label("Verify audit chain", systemImage: "checkmark.seal.fill") }.buttonStyle(.pill(Theme.teal))
+                Button { model.verify(report: true) } label: { Label("Verify audit chain", systemImage: "checkmark.seal.fill") }.buttonStyle(.pill(Theme.teal))
                 Spacer()
             }
             .disabled(model.busy != nil)
@@ -401,6 +401,9 @@ struct MFACard: View {
 
     var next: Int? { steps.first { !$0.done }?.n }
 
+    /// Each finished step can be undone from its tile: in case something stops working.
+    func undo(_ n: Int) -> Action? { [1: .mfaRemove, 2: .mfaUnenforce, 3: .remoteDisable][n] }
+
     var body: some View {
         Card(title: profile.profile, symbol: "key.fill", tint: Theme.accent,
              trailing: AnyView(Text("\(steps.filter(\.done).count) of 3").font(.callout.weight(.semibold)).foregroundStyle(.secondary))) {
@@ -416,21 +419,31 @@ struct MFACard: View {
                             Text(s.title).font(.callout.weight(.semibold))
                         }
                         Text(s.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        if !s.done {
+                        if !s.done && s.n == 3 {
+                            Button { model.addPhone(profile.profile) } label: { Text("Add phone…") }
+                                .buttonStyle(.pill(Theme.violet, filled: s.n == next)).disabled(s.n != next)
+                                .help("Shows a QR code for Google Authenticator or any authenticator app")
+                            Button("Phone already in IAM…") { model.perform(.remoteEnable, on: profile.profile) }
+                                .buttonStyle(.link).font(.caption).disabled(s.n != next)
+                        } else if !s.done {
                             Button { model.perform(s.action, on: profile.profile) } label: { Text(s.action.title) }
                                 .buttonStyle(.pill(Theme.violet, filled: s.n == next)).disabled(s.n != next)
+                        } else if let undo = undo(s.n) {
+                            Button(undo.title.replacingOccurrences(of: "…", with: "")) { model.perform(undo, on: profile.profile) }
+                                .buttonStyle(.link).font(.caption)
+                                .help(undo.explain(profile.profile) ?? "")
                         }
                     }
                     .padding(10)
-                    .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(RoundedRectangle(cornerRadius: 10).fill((s.done ? Theme.safe : Theme.violet).opacity(0.07)))
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
             if profile.remoteSerial != nil {
                 HStack(spacing: 8) {
                     Button { model.approveWithCode(profile.profile) } label: { Label("Approve with code…", systemImage: "number") }.buttonStyle(.pill(Theme.info))
                         .help("Test phone approval: type a code from your authenticator app")
-                    Button { model.perform(.remoteDisable, on: profile.profile) } label: { Label("Turn off phone approval", systemImage: "iphone.slash") }.buttonStyle(.pill(Theme.slate))
                     Spacer()
                 }
             }
@@ -450,7 +463,7 @@ struct AuditView: View {
                 Toggle("Hide routine use", isOn: $model.hideRoutine).toggleStyle(.checkbox)
                     .help("Hide “session used” entries: one is written every time a command reuses a cached session")
                 Spacer()
-                Button { model.verify() } label: { Label("Verify chain", systemImage: "checkmark.seal") }.buttonStyle(.pill(Theme.teal))
+                Button { model.verify(report: true) } label: { Label("Verify chain", systemImage: "checkmark.seal") }.buttonStyle(.pill(Theme.teal))
                     .help("Recompute every entry's hash and compare the newest with the sealed copy in the vault")
                 Button { model.revealLog() } label: { Label("Show log file", systemImage: "doc.text.magnifyingglass") }.buttonStyle(.pill(Theme.slate))
             }
@@ -509,6 +522,8 @@ struct AuditRow: View {
             "zsp.installed": "Installed", "zsp.uninstalled": "Uninstalled",
             "mfa.setup": "This Mac added as an MFA device", "mfa.enforced": "AWS now requires MFA",
             "remote.enabled": "Phone approval turned on", "remote.disabled": "Phone approval turned off",
+            "mfa.unenforced": "AWS no longer requires MFA", "mfa.removed": "This Mac's MFA device removed",
+            "mfa.phone.created": "Phone MFA device created", "mfa.phone.cancelled": "Unused phone MFA device deleted",
             "session.away": "Nobody at the Mac: no session", "keys.migrated": "Keys migrated",
             "setup.done": "Setup", "profile.tested": "Profile tested", "watcher.tested": "Auto-move tested",
         ][entry.event] ?? entry.event
@@ -523,7 +538,9 @@ struct AuditRow: View {
         case "sessions.revoked": return "xmark.shield.fill"
         case "mfa.setup": return "lock.iphone"
         case "mfa.enforced": return "checkmark.shield.fill"
-        case "remote.enabled", "remote.disabled": return "iphone"
+        case "remote.enabled", "remote.disabled", "mfa.phone.created", "mfa.phone.cancelled": return "iphone"
+        case "mfa.unenforced": return "shield.slash"
+        case "mfa.removed": return "lock.open"
         case "session.away": return "moon.zzz.fill"
         case "auth.denied", "session.failed", "key.rotate.failed": return "exclamationmark.triangle.fill"
         case "key.deleted", "key.forgotten": return "trash.fill"
@@ -538,7 +555,7 @@ struct AuditRow: View {
         case "key.imported", "key.added", "setup.done": return Theme.info
         case "session.issued", "session.served": return Theme.safe
         case "key.rotated", "key.created": return Theme.accent
-        case "mfa.setup", "mfa.enforced", "remote.enabled", "remote.disabled": return Theme.violet
+        case "mfa.setup", "mfa.enforced", "remote.enabled", "remote.disabled", "mfa.unenforced", "mfa.removed", "mfa.phone.created", "mfa.phone.cancelled": return Theme.violet
         case "sessions.revoked", "key.deleted", "key.forgotten": return Theme.danger
         default: return Theme.slate
         }

@@ -9,6 +9,16 @@ Secure Enclave, the chip will not unseal one without Touch ID, the AWS CLI and S
 see a session that lasts an hour, and any key that lands in `~/.aws/credentials` (from
 `aws configure`, a paste, a script) is moved out within seconds.
 
+## The problem
+
+This is what any program running as you can read on a normal Mac with the AWS CLI set up
+(keys redacted here; on the real screen they were in full):
+
+<img src="docs/images/plaintext-before.png" width="640" alt="cat ~/.aws/credentials printing three AWS access keys and secrets in plain text, redacted">
+
+Every key there is a standing permission: it works from anywhere, forever, for whoever copies
+it. After aws-cli-zsp the same file holds no keys at all, and the AWS CLI still works.
+
 It is built from scratch on the ideas behind [aws-vault](https://github.com/ByteNess/aws-vault),
 and adds:
 
@@ -20,7 +30,7 @@ and adds:
 | Audit trail | ❌ | hash-chained, with who asked (`aws s3 ls ← zsh`) |
 | Rotate a key | `aws-vault rotate` | one click, verified before the old key is deleted |
 | Revoke sessions already issued (a thief's too) | ❌ | one click (an `aws:TokenIssueTime` deny policy) |
-| MFA enforced by AWS, not just asked for locally | `mfa_serial`, a code typed each session | this Mac is an MFA device (one Touch ID), and AWS refuses the bare key |
+| MFA enforced by AWS, not just asked for locally | `mfa_serial`, a code typed each session | this Mac is an MFA device (one Touch ID), and AWS refuses the bare key; set up and undone from the UI |
 | Approve when you are not at the Mac (Claude Code Remote Control) | ❌ | a code from your phone: `aws-cli-zsp approve` |
 | When AWS last saw each key used | ❌ | **Check last use in AWS** |
 | Menu bar UI | ❌ | ✅ |
@@ -190,8 +200,13 @@ mint a new key, and **Revoke sessions** kills every one issued so far.
 ## MFA, and approving from your phone
 
 Touch ID protects the key on this Mac, but AWS does not know about it: a copy of the key
-would work anywhere. The **MFA & phone** tab walks through three steps per key, each a button; the same steps as
-commands make AWS itself demand MFA, without adding a step locally:
+would work anywhere. The **MFA & phone** tab walks through three steps per key, each a button, and each finished
+step has an undo link under it (**Remove MFA**, **Stop requiring MFA**, **Turn off phone
+approval**) in case something that uses the key stops working:
+
+<img src="docs/images/mfa.png" width="480" alt="MFA and phone tab: bedrock has steps 1 and 2 done with undo links, step 3 Add phone; default has not started">
+
+The same steps as commands make AWS itself demand MFA, without adding a step locally:
 
 ```bash
 aws-cli-zsp mfa setup   --profile bedrock   # this Mac becomes a virtual MFA device for the key's IAM user
@@ -207,6 +222,13 @@ devices or policies: aws-cli-zsp's own admin calls use a fresh session, while a 
 hour-long CLI session cannot mint itself a permanent key. It refuses to run until an MFA
 session from this Mac has worked, so it cannot lock you out.
 
+To undo: `aws-cli-zsp mfa unenforce --profile bedrock` removes the policy (the key works
+without MFA again, everywhere); `aws-cli-zsp mfa remove --profile bedrock` undoes everything,
+removing the policy first while this Mac can still give MFA, then deactivating and deleting
+its MFA device. If the Mac cannot get an MFA session any more (its device deleted in the
+console), AWS refuses both, and the fix is to delete the inline policy `aws-cli-zsp-require-mfa`
+in the IAM console.
+
 **When nobody is at the Mac** (Claude Code driven over Remote Control from your phone, or the
 screen locked), a Touch ID prompt would wait where nobody can see it. Instead, when the screen
 is locked or the Mac has had no keyboard or mouse input for 5 minutes, a new session fails at
@@ -214,9 +236,29 @@ once with what to do. With remote approval enabled, a code from your phone's aut
 approves it:
 
 ```bash
-aws-cli-zsp remote enable --profile bedrock    # once, at the Mac: needs mfa enforce and an MFA device on your phone
+aws-cli-zsp mfa add-phone --profile bedrock    # once, at the Mac: a QR code for your authenticator app
+aws-cli-zsp mfa confirm-phone --profile bedrock --serial ARN 123456 654321   # two codes in a row: enabled, approval on
 aws-cli-zsp approve --profile bedrock 123456   # what Claude Code runs after asking you for the code
 ```
+
+In the UI, **Add phone…** on step 3 does the first two: it creates the device in AWS, shows
+its QR code, and asks for two codes.
+
+<img src="docs/images/add-phone.png" width="380" alt="Add phone dialog: a QR code to scan with an authenticator app, the secret to type in by hand, and two code fields">
+
+ Any TOTP app works: Google Authenticator, Microsoft
+Authenticator, 1Password, Authy. There is no push approval: AWS IAM MFA is codes only, so you
+read the code and send it. A phone you added in the IAM console already works too:
+**Phone already in IAM…** (`aws-cli-zsp remote enable --profile bedrock`).
+
+With Claude Code Remote Control, from your phone:
+
+1. Ask Claude for something that needs AWS. Nobody is at the Mac, so instead of a Touch ID
+   prompt nobody can see, the command fails at once, telling Claude to ask you for a code.
+2. Claude asks: "I need the 6-digit code for bedrock."
+3. Copy the code from your authenticator app and send it in the chat.
+4. Claude runs `aws-cli-zsp approve`, AWS checks the code, and the session lasts the usual
+   hour: nothing asks again until it expires.
 
 ```mermaid
 sequenceDiagram
@@ -246,7 +288,8 @@ reads it gets a key AWS refuses without a code from your phone, which it does no
 code AWS sees once and rejects on reuse; it is in your chat for 30 seconds of usefulness.
 
 The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`
-and `iam:PutUserPolicy` on itself for these commands.
+and `iam:PutUserPolicy` on itself for these commands, and `iam:DeleteUserPolicy`,
+`iam:DeactivateMFADevice` and `iam:DeleteVirtualMFADevice` to undo them.
 
 ## Commands
 
@@ -267,6 +310,10 @@ aws-cli-zsp duration --profile P 8h           session length, 15m to 12h (defaul
 aws-cli-zsp exec --profile P -- terraform plan
 aws-cli-zsp disable-key | delete-key | forget --profile P
 aws-cli-zsp mfa setup | enforce --profile P
+aws-cli-zsp mfa unenforce | remove --profile P   undo: MFA no longer required / this Mac's device deleted too
+aws-cli-zsp mfa add-phone --profile P           QR code for Google Authenticator (or any TOTP app)
+aws-cli-zsp mfa confirm-phone --profile P --serial ARN CODE1 CODE2
+aws-cli-zsp mfa cancel-phone --profile P --serial ARN
 aws-cli-zsp remote enable [--serial ARN] | disable --profile P
 aws-cli-zsp approve --profile P CODE
 aws-cli-zsp audit [--verify] [--limit N]

@@ -140,3 +140,61 @@ final class SetupTests: XCTestCase {
         XCTAssertFalse(on.watching)
     }
 }
+
+final class MFAUndoTests: XCTestCase {
+    func enforced() throws -> Sandbox {
+        let s = Sandbox()
+        s.write(credentials: screenshotCredentials)
+        _ = try s.vault.importPlaintext(origin: "test")
+        _ = try s.vault.setupMFA("bedrock", deviceName: "aws-cli-zsp-mac-bedrock")
+        try s.vault.enforceMFA("bedrock")
+        return s
+    }
+
+    func testAddPhoneFromTheMacEnablesItAndTurnsOnApproval() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        let d = try s.vault.addPhone("bedrock", deviceName: "aws-cli-zsp-phone-bedrock")
+        XCTAssertTrue(d.uri.hasPrefix("otpauth://totp/AWS:andrew@123456789012"), d.uri)
+        XCTAssertTrue(d.uri.contains("secret=\(s.aws.phoneSeed)"))
+        XCTAssertNil(s.vault.meta.all()["bedrock"]?.remoteSerial, "not until the phone has proved it scanned the code")
+        XCTAssertThrowsError(try s.vault.confirmPhone("bedrock", serial: d.serial, code1: "123456", code2: "123456"), "two different codes")
+        try s.vault.confirmPhone("bedrock", serial: d.serial, code1: "123456", code2: "654321")
+        XCTAssertEqual(s.vault.meta.all()["bedrock"]?.remoteSerial, d.serial)
+        XCTAssertNotNil(try s.store.read(.remote, "bedrock"))
+    }
+
+    func testAddPhoneNeedsEnforcement() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        s.write(credentials: screenshotCredentials)
+        _ = try s.vault.importPlaintext(origin: "test")
+        XCTAssertThrowsError(try s.vault.addPhone("bedrock", deviceName: "phone"))
+        XCTAssertFalse(s.aws.calls.contains { $0.hasPrefix("CreateVirtualMFADevice") })
+    }
+
+    func testUnenforceRemovesThePolicyAndPhoneApproval() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        s.aws.mfaDevices.append("arn:aws:iam::123456789012:mfa/phone")
+        _ = try s.vault.enableRemote("bedrock", serial: nil)
+        try s.vault.unenforceMFA("bedrock")
+        XCTAssertTrue(s.aws.policies.isEmpty)
+        let m = s.vault.meta.all()["bedrock"]
+        XCTAssertNil(m?.mfaEnforced)
+        XCTAssertNil(m?.remoteSerial, "its copy of the key is safe only while AWS demands a code")
+        XCTAssertNil(try s.store.read(.remote, "bedrock"))
+        XCTAssertNotNil(m?.mfaSerial, "this Mac stays an MFA device")
+    }
+
+    func testRemoveUndoesEverythingFromTheMFASessionFirst() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        try s.vault.removeMFA("bedrock")
+        let serial = "arn:aws:iam::123456789012:mfa/aws-cli-zsp-mac-bedrock"
+        let policy = try XCTUnwrap(s.aws.calls.firstIndex { $0.hasPrefix("DeleteUserPolicy") })
+        let deactivate = try XCTUnwrap(s.aws.calls.firstIndex(of: "DeactivateMFADevice andrew \(serial)"))
+        XCTAssertLessThan(policy, deactivate, "the policy goes while the device can still give MFA")
+        XCTAssertTrue(s.aws.calls.contains("DeleteVirtualMFADevice \(serial)"))
+        XCTAssertNil(s.master("bedrock")?.mfaSeed)
+        XCTAssertNil(s.vault.meta.all()["bedrock"]?.mfaSerial)
+        _ = try s.vault.credentials(for: "bedrock", requester: "aws s3 ls")
+        XCTAssertTrue(s.aws.calls.last?.hasSuffix(" 3600") == true, "plain sessions again: \(s.aws.calls.last ?? "")")
+    }
+}

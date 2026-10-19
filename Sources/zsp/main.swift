@@ -23,9 +23,13 @@ Using them
 MFA, and approval when nobody is at the Mac (Claude Code Remote Control)
   aws-cli-zsp mfa setup --profile P            make this Mac an MFA device: every session carries MFA, still one Touch ID
   aws-cli-zsp mfa enforce --profile P          AWS refuses the key without MFA, so a copy of it alone is worthless
-  aws-cli-zsp remote enable --profile P [--serial ARN]   let a code from your phone approve a session
+  aws-cli-zsp mfa add-phone --profile P        a QR code for your authenticator app (Google Authenticator etc.)
+  aws-cli-zsp mfa confirm-phone --profile P --serial ARN CODE1 CODE2   enable it and allow phone approval
+  aws-cli-zsp remote enable --profile P [--serial ARN]   phone approval with a device already in IAM
   aws-cli-zsp approve --profile P CODE         issue a session with that code, no Touch ID
   aws-cli-zsp remote disable --profile P
+  aws-cli-zsp mfa unenforce --profile P        undo: the key works without MFA again
+  aws-cli-zsp mfa remove --profile P           undo all of it: this Mac's MFA device is deleted from AWS
 
 Rotate and revoke
   aws-cli-zsp rotate --profile P [--keep-old]  new key, verified, old one deleted (or deactivated)
@@ -459,8 +463,35 @@ func cmdMFA() throws {
             AWS now refuses the \(profile) key without MFA (inline policy \(Vault.requireMFAPolicyName)); a copy of the key alone is worth nothing.
             To approve from your phone when away from the Mac: aws-cli-zsp remote enable --profile \(profile)
             """)
+    case "unenforce":
+        try vault.unenforceMFA(profile)
+        done(["profile": profile], "AWS accepts the \(profile) key without MFA again (policy \(Vault.requireMFAPolicyName) removed); phone approval is off")
+    case "remove":
+        confirm("Remove this Mac's MFA device from \(profile)? MFA enforcement and phone approval are turned off first.")
+        try vault.removeMFA(profile)
+        done(["profile": profile], "this Mac is no longer an MFA device for \(profile); sessions are plain Touch ID ones again")
+    case "add-phone":
+        let stamp = String(Int(Date().timeIntervalSince1970))
+        let name = String("aws-cli-zsp-phone-\(profile)-\(stamp)".map { $0.isLetter || $0.isNumber || "+=,.@-_".contains($0) ? $0 : "-" }.prefix(64))
+        let d = try vault.addPhone(profile, deviceName: name)
+        done(d, """
+            scan this in your authenticator app (or type the secret in by hand):
+              \(d.uri)
+              secret: \(d.seed)
+            then: aws-cli-zsp mfa confirm-phone --profile \(profile) --serial \(d.serial) CODE1 CODE2
+            """)
+    case "confirm-phone":
+        guard let serial = opts.values["--serial"], opts.rest.count == 3 else {
+            fail("usage: aws-cli-zsp mfa confirm-phone --profile \(profile) --serial ARN CODE1 CODE2 (two codes in a row)")
+        }
+        try vault.confirmPhone(profile, serial: serial, code1: opts.rest[1], code2: opts.rest[2])
+        done(["profile": profile, "serial": serial], "your phone is an MFA device for \(profile), and its codes approve sessions when you are away: aws-cli-zsp approve --profile \(profile) CODE")
+    case "cancel-phone":
+        guard let serial = opts.values["--serial"] else { fail("usage: aws-cli-zsp mfa cancel-phone --profile \(profile) --serial ARN") }
+        try vault.cancelPhone(profile, serial: serial)
+        done(["profile": profile], "removed the unused device \(serial)")
     default:
-        fail("usage: aws-cli-zsp mfa setup|enforce --profile P")
+        fail("usage: aws-cli-zsp mfa setup|enforce|unenforce|remove|add-phone|confirm-phone|cancel-phone --profile P")
     }
 }
 

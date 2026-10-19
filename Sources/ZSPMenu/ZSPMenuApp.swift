@@ -1,4 +1,5 @@
 import SwiftUI
+import ZSPCore
 
 @main
 struct ZSPMenuApp: App {
@@ -70,7 +71,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !atLogin { showWindow() }
             return
         }
-        MainActor.assumeIsolated {
+        MainActor.assumeIsolated { () -> Void in
+            if args.contains("--qr") {
+                // The Add phone dialog, with a made-up device and seed.
+                let d = Vault.PhoneDevice(serial: "arn:aws:iam::111122223333:mfa/aws-cli-zsp-phone-bedrock", seed: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+                                          uri: "otpauth://totp/AWS:andrew@111122223333%20(bedrock)?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=AWS")
+                NSApp.appearance = NSAppearance(named: .aqua)
+                let a = Model.phoneAlert(d, retry: nil).0
+                a.layout()
+                a.window.orderFrontRegardless()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    if let v = a.window.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                        v.cacheDisplay(in: v.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
+                    }
+                    exit(0)
+                }
+                return
+            }
             let model = Model()
             if args.contains("--audit") { model.tab = .audit }
             if args.contains("--keys") { model.tab = .keys }

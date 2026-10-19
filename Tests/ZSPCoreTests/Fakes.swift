@@ -14,6 +14,7 @@ final class FakeAWS: AWSService {
     var mfaCodes: [MFACode] = []
     var enabled: [(serial: String, code1: String, code2: String)] = []
     let mfaSeed = "JBSWY3DPEHPK3PXP"
+    let phoneSeed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
     func getSessionToken(_ c: AWSCredentials, durationSeconds: Int, mfa: MFACode?) throws -> AWSCredentials {
         calls.append("GetSessionToken \(c.accessKeyId) \(durationSeconds)\(mfa.map { " mfa=\($0.serial)" } ?? "")")
@@ -71,7 +72,7 @@ final class FakeAWS: AWSService {
 
     func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String) {
         calls.append("CreateVirtualMFADevice \(name)")
-        return ("arn:aws:iam::123456789012:mfa/\(name)", mfaSeed)
+        return name.contains("phone") ? ("arn:aws:iam::123456789012:mfa/\(name)", phoneSeed) : ("arn:aws:iam::123456789012:mfa/\(name)", mfaSeed)
     }
 
     func enableMFADevice(_ c: AWSCredentials, userName: String, serial: String, code1: String, code2: String) throws {
@@ -82,6 +83,16 @@ final class FakeAWS: AWSService {
 
     func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws {
         calls.append("DeleteVirtualMFADevice \(serial)")
+        mfaDevices.removeAll { $0 == serial }
+    }
+
+    func deactivateMFADevice(_ c: AWSCredentials, userName: String, serial: String) throws {
+        calls.append("DeactivateMFADevice \(userName) \(serial)")
+    }
+
+    func deleteUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws {
+        calls.append("DeleteUserPolicy \(userName) \(policyName)")
+        policies.removeAll { $0.user == userName && $0.name == policyName }
     }
 }
 

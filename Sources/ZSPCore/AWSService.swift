@@ -15,6 +15,8 @@ public protocol AWSService {
     func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String)
     func enableMFADevice(_ c: AWSCredentials, userName: String, serial: String, code1: String, code2: String) throws
     func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws
+    func deactivateMFADevice(_ c: AWSCredentials, userName: String, serial: String) throws
+    func deleteUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws
 }
 
 public extension AWSService {
@@ -171,5 +173,13 @@ public final class AWSQueryService: AWSService {
 
     public func deleteVirtualMFADevice(_ c: AWSCredentials, serial: String) throws {
         _ = try call(Self.iam, "DeleteVirtualMFADevice", [("SerialNumber", serial)], c)
+    }
+
+    public func deactivateMFADevice(_ c: AWSCredentials, userName: String, serial: String) throws {
+        _ = try call(Self.iam, "DeactivateMFADevice", [("UserName", userName), ("SerialNumber", serial)], c)
+    }
+
+    public func deleteUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws {
+        _ = try call(Self.iam, "DeleteUserPolicy", [("UserName", userName), ("PolicyName", policyName)], c)
     }
 }

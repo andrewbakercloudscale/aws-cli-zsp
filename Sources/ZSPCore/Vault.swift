@@ -407,16 +407,120 @@ public final class Vault {
         "iam:CreateLoginProfile", "iam:UpdateLoginProfile",
     ]
 
+    /// Undoes `mfa enforce`: the key works without MFA again, everywhere. Phone approval goes
+    /// with it, because its copy of the key is safe only while AWS demands a code.
+    public func unenforceMFA(_ profile: String) throws {
+        let master = try unlock(profile, reason: "let the “\(profile)” key work without MFA again")
+        try removeEnforcement(profile, master, try adminCredentials(master))
+    }
+
+    func removeEnforcement(_ profile: String, _ master: MasterKey, _ session: AWSCredentials) throws {
+        let (user, _) = try iamUser(session)
+        do {
+            try aws.deleteUserPolicy(session, userName: user, policyName: Self.requireMFAPolicyName)
+        } catch ZSPError.aws(code: "NoSuchEntity", _) {
+            // Already gone (deleted in the console): nothing to undo in AWS.
+        } catch {
+            throw ZSPError.invalid("AWS refused to remove \(Self.requireMFAPolicyName) (\(error.localizedDescription)). "
+                + "Delete that inline policy from IAM user \(user) in the IAM console instead.")
+        }
+        if meta.all()[profile]?.remoteSerial != nil { try disableRemote(profile) }
+        try store.delete(.session, profile)
+        try meta.update(profile) { $0?.mfaEnforced = nil; $0?.sessionExpiresAt = nil }
+        try audit.append("mfa.unenforced", profile: profile, detail: ["user": user, "policy": Self.requireMFAPolicyName])
+    }
+
+    /// Undoes `mfa setup`, and enforcement first if it is on (from the MFA session, while this
+    /// Mac's device still exists): this Mac stops being an MFA device for the key's IAM user.
+    public func removeMFA(_ profile: String) throws {
+        let master = try unlock(profile, reason: "remove this Mac's MFA device from AWS profile “\(profile)”")
+        guard let serial = master.mfaSerial else {
+            try meta.update(profile) { $0?.mfaSerial = nil; $0?.mfaEnforced = nil }
+            return
+        }
+        let session = try adminCredentials(master)
+        if meta.all()[profile]?.mfaEnforced == true { try removeEnforcement(profile, master, session) }
+        let (user, _) = try iamUser(session)
+        for step in [{ try self.aws.deactivateMFADevice(session, userName: user, serial: serial) },
+                     { try self.aws.deleteVirtualMFADevice(session, serial: serial) }] {
+            do { try step() } catch ZSPError.aws(code: "NoSuchEntity", _) {}
+        }
+        var updated = master
+        updated.mfaSerial = nil
+        updated.mfaSeed = nil
+        try writeMaster(updated, profile)
+        try store.delete(.session, profile)
+        try meta.update(profile) { $0?.mfaSerial = nil; $0?.mfaEnforced = nil; $0?.sessionExpiresAt = nil }
+        try audit.append("mfa.removed", profile: profile, detail: ["device": serial, "user": user])
+    }
+
     // MARK: Approval by MFA code, for when nobody is at the Mac
+
+    /// A phone authenticator, added from here instead of the IAM console: AWS creates the
+    /// device, the QR code from `uri` is scanned, and `confirmPhone` enables it with two codes.
+    public struct PhoneDevice: Codable, Equatable, Sendable {
+        public var serial: String
+        public var seed: String
+        /// otpauth://, what the QR code holds.
+        public var uri: String
+
+        public init(serial: String, seed: String, uri: String) {
+            self.serial = serial
+            self.seed = seed
+            self.uri = uri
+        }
+    }
+
+    public func addPhone(_ profile: String, deviceName: String) throws -> PhoneDevice {
+        let master = try unlock(profile, reason: "add your phone as an MFA device for AWS profile “\(profile)”")
+        try requireEnforced(profile, master)
+        let session = try adminCredentials(master)
+        let (user, identity) = try iamUser(session)
+        let device = try aws.createVirtualMFADevice(session, name: deviceName)
+        let label = "\(user)@\(identity.account) (\(profile))".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? user
+        try audit.append("mfa.phone.created", profile: profile, detail: ["device": device.serial])
+        return PhoneDevice(serial: device.serial, seed: device.seed,
+                           uri: "otpauth://totp/AWS:\(label)?secret=\(device.seed)&issuer=AWS")
+    }
+
+    /// Enables the phone with two consecutive codes from it, then turns on approval by code.
+    public func confirmPhone(_ profile: String, serial: String, code1: String, code2: String) throws {
+        guard TOTP.isCode(code1), TOTP.isCode(code2), code1 != code2 else {
+            throw ZSPError.invalid("two different 6-digit codes, one after the other, from your authenticator app")
+        }
+        let master = try unlock(profile, reason: "turn on approval by your phone's code for AWS profile “\(profile)”")
+        try requireEnforced(profile, master)
+        let session = try adminCredentials(master)
+        let (user, _) = try iamUser(session)
+        try aws.enableMFADevice(session, userName: user, serial: serial, code1: code1, code2: code2)
+        try keepRemoteCopy(profile, master, serial)
+    }
+
+    /// Deletes a phone device that was never enabled (the QR code was not scanned after all).
+    public func cancelPhone(_ profile: String, serial: String) throws {
+        let master = try unlock(profile, reason: "remove the unused phone MFA device from AWS profile “\(profile)”")
+        do { try aws.deleteVirtualMFADevice(try adminCredentials(master), serial: serial) } catch ZSPError.aws(code: "NoSuchEntity", _) {}
+        try audit.append("mfa.phone.cancelled", profile: profile, detail: ["device": serial])
+    }
+
+    func requireEnforced(_ profile: String, _ master: MasterKey) throws {
+        guard meta.all()[profile]?.mfaEnforced == true, master.mfaSerial != nil else {
+            throw ZSPError.invalid("Run aws-cli-zsp mfa setup and mfa enforce for \(profile) first. Without them, the copy remote approval keeps would work with no code at all.")
+        }
+    }
+
+    func keepRemoteCopy(_ profile: String, _ master: MasterKey, _ serial: String) throws {
+        try store.write(.remote, profile, try ZSPJSON.encoder.encode(master.withoutMFASeed))
+        try meta.update(profile) { $0?.remoteSerial = serial }
+        try audit.append("remote.enabled", profile: profile, detail: ["device": serial])
+    }
 
     /// Keeps a copy of the key that opens without Touch ID, for `approve`. It is safe only
     /// because AWS refuses that key without a code from your phone, so this needs `mfa enforce`
     /// first and an MFA device that is not this Mac's.
     public func enableRemote(_ profile: String, serial: String?) throws -> String {
         let master = try unlock(profile, reason: "let a code from your phone approve AWS profile “\(profile)” when you are away from the Mac")
-        guard meta.all()[profile]?.mfaEnforced == true, master.mfaSerial != nil else {
-            throw ZSPError.invalid("Run aws-cli-zsp mfa setup and mfa enforce for \(profile) first. Without them, the copy remote approval keeps would work with no code at all.")
-        }
+        try requireEnforced(profile, master)
         let session = try adminCredentials(master)
         let devices = try aws.listMFADevices(session).filter { $0 != master.mfaSerial }
         let chosen: String
@@ -426,13 +530,11 @@ public final class Vault {
         } else if devices.count == 1 {
             chosen = devices[0]
         } else if devices.isEmpty {
-            throw ZSPError.invalid("This IAM user has no MFA device besides this Mac's. Add your phone in the IAM console (Security credentials, Assign MFA device), then run this again.")
+            throw ZSPError.invalid("This IAM user has no MFA device besides this Mac's. Add your phone: aws-cli-zsp mfa add-phone --profile \(profile) (or Add phone… in the MFA & phone tab).")
         } else {
             throw ZSPError.invalid("This IAM user has several MFA devices; choose one with --serial: \(devices.joined(separator: ", "))")
         }
-        try store.write(.remote, profile, try ZSPJSON.encoder.encode(master.withoutMFASeed))
-        try meta.update(profile) { $0?.remoteSerial = chosen }
-        try audit.append("remote.enabled", profile: profile, detail: ["device": chosen])
+        try keepRemoteCopy(profile, master, chosen)
         return chosen
     }
 
