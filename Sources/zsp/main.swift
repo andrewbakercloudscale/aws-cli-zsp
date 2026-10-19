@@ -5,7 +5,7 @@ import ZSPCore
 let version = "0.2.0"
 
 let usage = """
-aws-cli-zsp \(version) (AWS CLI: ZSP): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
+aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
 
 Keys
   aws-cli-zsp import [--auto]              move every key in ~/.aws/credentials and ~/.aws/config into the vault

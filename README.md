@@ -1,6 +1,8 @@
 # aws-cli-zsp (AWS CLI: ZSP)
 
-**Zero standing plaintext for AWS keys on macOS.** Your access keys are sealed by the Mac's
+**Zero Standing Permissions (ZSP) for AWS keys on macOS.** Nothing on your Mac can use your
+AWS access until you approve it: there is no readable key to steal, and what the CLI gets is a
+session that expires on its own. Your access keys are sealed by the Mac's
 Secure Enclave, the chip will not unseal one without Touch ID, the AWS CLI and SDKs only ever
 see a session that lasts an hour, and any key that lands in `~/.aws/credentials` (from
 `aws configure`, a paste, a script) is moved out within seconds.

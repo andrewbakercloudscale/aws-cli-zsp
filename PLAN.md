@@ -1,6 +1,7 @@
 # aws-cli-zsp plan
 
-Zero-standing-plaintext AWS credentials for macOS: no key ever sits readable in `~/.aws`.
+Zero Standing Permissions (ZSP) for AWS credentials on macOS: no key ever sits readable in `~/.aws`,
+and nothing can use AWS access until you approve it with Touch ID.
 It is built from scratch on aws-vault's ideas (Keychain storage, short-lived STS sessions)
 and adds four things aws-vault lacks: plaintext keys are moved automatically, Touch ID guards
 every use of a key, the audit trail is hash-chained, and rotate and revoke happen in one click.
