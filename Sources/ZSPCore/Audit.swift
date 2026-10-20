@@ -59,7 +59,9 @@ public final class AuditLog {
             let fm = FileManager.default
             if let size = (try? fm.attributesOfItem(atPath: paths.auditFile.path))?[.size] as? Int, size > Self.rotateBytes {
                 let archived = paths.supportDir.appendingPathComponent("audit-\(SigV4.amzDate(Date())).jsonl")
-                try? fm.moveItem(at: paths.auditFile, to: archived)
+                do { try fm.moveItem(at: paths.auditFile, to: archived) } catch {
+                    Log.warning("audit", "could not archive the audit log at 5 MB: \(error.localizedDescription)")
+                }
             }
             var line = try ZSPJSON.encoder.encode(e)
             line.append(UInt8(ascii: "\n"))

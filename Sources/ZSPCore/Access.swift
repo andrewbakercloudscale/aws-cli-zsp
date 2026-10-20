@@ -71,11 +71,13 @@ extension Vault {
         do {
             return try body()
         } catch let ZSPError.aws(code, message) where Self.deniedCodes.contains(code) {
-            try? meta.update(profile) { m in
-                var d = Set(m?.iamDenied ?? []); d.insert(p)
-                m?.iamDenied = IAMPermission.allCases.filter(d.contains)
+            bestEffort("remember that IAM refuses \(p.rawValue) for \(profile)") {
+                try meta.update(profile) { m in
+                    var d = Set(m?.iamDenied ?? []); d.insert(p)
+                    m?.iamDenied = IAMPermission.allCases.filter(d.contains)
+                }
             }
-            _ = try? audit.append("access.denied", profile: profile, ok: false, detail: ["for": p.rawValue, "error": message])
+            recordFailure(.accessDenied, profile: profile, detail: ["for": p.rawValue, "error": message])
             throw ZSPError.invalid(readOnlyMessage(profile, p, marked: false))
         }
     }
@@ -86,13 +88,18 @@ extension Vault {
         guard let user = Self.userName(fromArn: identity.arn) else { return nil }
         let actions = Array(Set(IAMPermission.allCases.flatMap(\.userActions)))
         let context = ["aws:username": user]
-        guard var allowed = try? aws.simulate(c, principal: identity.arn, actions: actions, resource: identity.arn, context: context),
-              let mfa = try? aws.simulate(c, principal: identity.arn, actions: ["iam:CreateVirtualMFADevice"],
-                                          resource: "arn:aws:iam::\(identity.account):mfa/aws-cli-zsp-check", context: context)
-        else { return nil }
-        allowed.merge(mfa) { a, b in a && b }
+        let allowed: [String: Bool], mfa: [String: Bool]
+        do {
+            allowed = try aws.simulate(c, principal: identity.arn, actions: actions, resource: identity.arn, context: context)
+            mfa = try aws.simulate(c, principal: identity.arn, actions: ["iam:CreateVirtualMFADevice"],
+                                   resource: "arn:aws:iam::\(identity.account):mfa/aws-cli-zsp-check", context: context)
+        } catch {
+            Log.info("iam", "IAM would not simulate the policy of \(identity.arn): \(error.localizedDescription)")
+            return nil
+        }
+        let merged = allowed.merging(mfa) { a, b in a && b }
         return IAMPermission.allCases.filter { p in
-            (p.userActions + (p == .mfa ? ["iam:CreateVirtualMFADevice"] : [])).contains { allowed[$0] != true }
+            (p.userActions + (p == .mfa ? ["iam:CreateVirtualMFADevice"] : [])).contains { merged[$0] != true }
         }
     }
 
@@ -101,6 +108,6 @@ extension Vault {
         guard meta.all()[profile] != nil else { throw ZSPError.notFound("No profile “\(profile)” in the vault") }
         // Auto also forgets what was learned, so the next refusal (or Check in AWS) decides again.
         try meta.update(profile) { $0?.access = level; if level == nil { $0?.iamDenied = nil } }
-        try audit.append("access.set", profile: profile, detail: ["access": level?.rawValue ?? "auto"])
+        try audit.append(.accessSet, profile: profile, detail: ["access": level?.rawValue ?? "auto"])
     }
 }

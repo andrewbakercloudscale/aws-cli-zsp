@@ -48,15 +48,36 @@ public final class MetadataStore {
     }
 
     public func all() -> [String: ProfileMeta] {
-        guard let data = try? Data(contentsOf: paths.metadataFile),
-              let list = try? ZSPJSON.decoder.decode([ProfileMeta].self, from: data) else { return [:] }
+        (try? load()) ?? [:]
+    }
+
+    /// Throws when profiles.json is there but unreadable, so `update` never writes over it.
+    func load() throws -> [String: ProfileMeta] {
+        guard let data = try? Data(contentsOf: paths.metadataFile) else { return [:] }
+        let list: [ProfileMeta]
+        do {
+            list = try ZSPJSON.decoder.decode([ProfileMeta].self, from: data)
+        } catch {
+            Log.errorOnce("metadata", "\(paths.metadataFile.lastPathComponent) does not decode: \(error)")
+            throw error
+        }
         return Dictionary(list.map { ($0.profile, $0) }, uniquingKeysWith: { _, b in b })
     }
 
     public func update(_ profile: String, _ body: (inout ProfileMeta?) -> Void) throws {
         try paths.ensureSupportDir()
         try withFileLock(paths.lock("metadata")) {
-            var map = all()
+            var map: [String: ProfileMeta]
+            do {
+                map = try load()
+            } catch {
+                // Kept for support rather than lost: the keys themselves are in the vault, and the
+                // next Check in AWS or session fills most of this in again.
+                let aside = paths.supportDir.appendingPathComponent("profiles.json.damaged-\(Int(Date().timeIntervalSince1970))")
+                try? FileManager.default.moveItem(at: paths.metadataFile, to: aside)
+                Log.error("metadata", "moved the damaged profiles.json to \(aside.lastPathComponent) and started a new one")
+                map = [:]
+            }
             var entry = map[profile]
             body(&entry)
             map[profile] = entry
@@ -91,9 +112,14 @@ public struct Settings: Codable, Equatable, Sendable {
     }
 
     public static func load(_ paths: Paths) -> Settings {
-        guard let data = try? Data(contentsOf: paths.settingsFile),
-              let s = try? ZSPJSON.decoder.decode(Settings.self, from: data) else { return Settings() }
-        return s
+        guard let data = try? Data(contentsOf: paths.settingsFile) else { return Settings() }
+        do {
+            return try ZSPJSON.decoder.decode(Settings.self, from: data)
+        } catch {
+            // The defaults are the safe side: not set up, so the watcher moves nothing.
+            Log.errorOnce("settings", "settings.json does not decode, using the defaults: \(error)")
+            return Settings()
+        }
     }
 
     public func save(_ paths: Paths) throws {

@@ -28,6 +28,14 @@ public struct Paths: Sendable, Equatable {
     public var metadataFile: URL { supportDir.appendingPathComponent("profiles.json") }
     public var settingsFile: URL { supportDir.appendingPathComponent("settings.json") }
     public var watchLog: URL { supportDir.appendingPathComponent("watch.log") }
+    /// The support log (`Log`), never the audit trail.
+    public var logFile: URL { supportDir.appendingPathComponent("logs/aws-cli-zsp.log") }
+    public var mfaCountersFile: URL { supportDir.appendingPathComponent("mfa-counters.json") }
+
+    /// A file's text, or "" when it does not exist yet (a fresh ~/.aws).
+    public func text(_ url: URL) -> String {
+        (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
 
     /// A lock file for `name`. Profile names can hold anything, so they are reduced to a safe
     /// stem plus a short hash that keeps two similar names apart.

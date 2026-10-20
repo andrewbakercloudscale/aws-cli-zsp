@@ -39,14 +39,16 @@ extension Vault {
         guard var p = try pin(profile) else {
             try writePin(profile, AccountPin(account: id.account, arn: id.arn, sessionKeyId: creds.sessionToken == nil ? nil : creds.accessKeyId,
                                              pinnedAt: now()))
-            try audit.append("pin.set", profile: profile, detail: ["account": id.account, "arn": id.arn], requester: requester)
-            try? meta.update(profile) { $0?.pinnedAccount = id.account; $0?.account = id.account; $0?.arn = id.arn }
+            try audit.append(.pinSet, profile: profile, detail: ["account": id.account, "arn": id.arn], requester: requester)
+            Log.info("pin", "pinned \(profile) to account \(id.account)")
+            bestEffort("show the pin of \(profile)") {
+                try meta.update(profile) { $0?.pinnedAccount = id.account; $0?.account = id.account; $0?.arn = id.arn }
+            }
             return
         }
         guard p.account == id.account, p.arn == id.arn else {
-            try? store.delete(.session, profile)
-            _ = try? audit.append("key.swapped", profile: profile, ok: false,
-                                  detail: ["pinned": p.arn, "found": id.arn], requester: requester)
+            bestEffort("drop the session of \(profile)") { try store.delete(.session, profile) }
+            recordFailure(.keySwapped, profile: profile, detail: ["pinned": p.arn, "found": id.arn], requester: requester)
             throw ZSPError.auth("""
                 The key for “\(profile)” belongs to \(id.arn), but this profile is pinned to \(p.arn). \
                 Nothing was handed out: something may have replaced the key. If you changed it yourself, \
@@ -70,12 +72,12 @@ extension Vault {
     public func resetPin(_ profile: String) throws {
         _ = try unlock(profile, reason: "re-pin the AWS account for profile “\(profile)”")
         try pins?.delete(.pin, profile)
-        try? store.delete(.session, profile)
-        try? meta.update(profile) { $0?.pinnedAccount = nil; $0?.sessionExpiresAt = nil }
-        try audit.append("pin.reset", profile: profile)
+        try dropSession(profile)
+        bestEffort("clear the pin shown for \(profile)") { try meta.update(profile) { $0?.pinnedAccount = nil } }
+        try audit.append(.pinReset, profile: profile)
     }
 
     func dropPin(_ profile: String) {
-        try? pins?.delete(.pin, profile)
+        bestEffort("remove the pin of \(profile)") { try pins?.delete(.pin, profile) }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 public enum ZSPError: Error, LocalizedError, Equatable {
     case keychain(Int32, String)
@@ -10,9 +11,39 @@ public enum ZSPError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case let .keychain(status, message): return "Keychain error \(status): \(message)"
+        case let .keychain(status, message):
+            return "Keychain error \(status): \(message)" + (Self.keychainHint(status).map { ". \($0)" } ?? "")
         case let .notFound(m), let .auth(m), let .invalid(m), let .io(m): return m
-        case let .aws(code, message): return "AWS \(code): \(message)"
+        case let .aws(code, message):
+            return "AWS \(code): \(message)" + (Self.awsHint(code, message).map { ". \($0)" } ?? "")
+        }
+    }
+
+    /// What to do about the AWS errors people actually hit, so the message says more than the code.
+    static func awsHint(_ code: String, _ message: String) -> String? {
+        switch code {
+        case "SignatureDoesNotMatch", "RequestExpired", "InvalidSignatureException":
+            return message.lowercased().contains("expired") || code == "RequestExpired"
+                ? "This Mac's clock is probably wrong: AWS refuses requests more than 5 minutes off (System Settings › General › Date & Time)"
+                : "The secret does not match the key id: the key may have been pasted wrongly. Add it again with aws-cli-zsp add"
+        case "InvalidClientTokenId":
+            return "AWS does not know this key: it was deleted, or the key id is mistyped. Check the IAM console, or add the current key with aws-cli-zsp add"
+        case "ExpiredToken":
+            return "The session expired: run the command again for a new one"
+        case "AccessDenied" where message.contains("MultiFactorAuthentication"):
+            return "The MFA code was wrong or already used: wait for the next code and try again"
+        case "Throttling":
+            return "AWS is rate-limiting this key: wait a minute and try again"
+        default:
+            return nil
+        }
+    }
+
+    static func keychainHint(_ status: Int32) -> String? {
+        switch status {
+        case errSecInteractionNotAllowed: return "The login Keychain is locked: unlock the Mac and try again"
+        case errSecUserCanceled, errSecAuthFailed: return "The macOS prompt was cancelled or the password was wrong"
+        default: return nil
         }
     }
 }

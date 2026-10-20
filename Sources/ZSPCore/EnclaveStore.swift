@@ -83,7 +83,8 @@ public final class EnclaveStore: SecretStore {
         let epk = ephemeral.publicKey.x963Representation
         let shared = try ephemeral.sharedSecretFromKeyAgreement(with: try publicKey(Self.tier(kind)))
         let box = try AES.GCM.seal(data, using: Self.derive(shared, epk), authenticating: Self.aad(kind, account))
-        let sealed = try JSONEncoder().encode(Envelope(v: 1, epk: epk, box: box.combined!))
+        guard let combined = box.combined else { throw ZSPError.io("AES-GCM gave no sealed box for \(kind.rawValue) \(account)") }
+        let sealed = try JSONEncoder().encode(Envelope(v: 1, epk: epk, box: combined))
         let url = itemURL(kind, account)
         try ensureDir(url.deletingLastPathComponent())
         try writeData(sealed, to: url)
@@ -92,7 +93,13 @@ public final class EnclaveStore: SecretStore {
 
     public func read(_ kind: SecretKind, _ account: String) throws -> Data? {
         guard let raw = try? Data(contentsOf: itemURL(kind, account)) else { return nil }
-        let env = try JSONDecoder().decode(Envelope.self, from: raw)
+        let env: Envelope
+        do {
+            env = try JSONDecoder().decode(Envelope.self, from: raw)
+        } catch {
+            Log.error("vault", "\(itemURL(kind, account).lastPathComponent) (\(kind.rawValue) \(account)) is not a sealed item: \(error)")
+            throw ZSPError.invalid("The sealed \(kind.rawValue) for “\(account)” is damaged")
+        }
         let shared: SharedSecret
         do {
             let epk = try P256.KeyAgreement.PublicKey(x963Representation: env.epk)

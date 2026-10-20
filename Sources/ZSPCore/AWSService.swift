@@ -58,14 +58,14 @@ public final class AWSQueryService: AWSService {
         let done = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error {
-                box.result = .failure(ZSPError.io("cannot reach \(request.url?.host ?? "AWS"): \(error.localizedDescription)"))
+                box.result = .failure(ZSPError.io(networkMessage(error, host: request.url?.host ?? "AWS")))
             } else {
                 box.result = .success(((response as? HTTPURLResponse)?.statusCode ?? 0, data ?? Data()))
             }
             done.signal()
         }.resume()
         done.wait()
-        return try box.result!.get()
+        return try (box.result ?? .failure(ZSPError.io("no answer from \(request.url?.host ?? "AWS")"))).get()
     }
 
     func call(_ ep: Endpoint, _ action: String, _ params: [(String, String)], _ c: AWSCredentials) throws -> XMLDocument {
@@ -85,13 +85,25 @@ public final class AWSQueryService: AWSService {
         request.setValue(auth, forHTTPHeaderField: "Authorization")
         request.httpBody = body
 
-        let (status, data) = try transport(request)
+        let what = "\(ep.service.uppercased()) \(action)"
+        let start = Date()
+        let status: Int, data: Data
+        do {
+            (status, data) = try transport(request)
+        } catch {
+            Log.warning("aws", "\(what) did not reach AWS after \(Log.milliseconds(since: start)) ms: \(error.localizedDescription)")
+            throw error
+        }
         let doc = try? XMLDocument(data: data)
         guard status == 200, let doc else {
             let code = doc.flatMap { Self.text($0, "Code") } ?? "HTTP\(status)"
             let message = doc.flatMap { Self.text($0, "Message") } ?? String(decoding: data.prefix(300), as: UTF8.self)
+            // The request id is what AWS Support asks for.
+            let requestId = doc.flatMap { Self.text($0, "RequestId") } ?? "?"
+            Log.warning("aws", "\(what) refused: HTTP \(status) \(code) (request \(requestId), \(Log.milliseconds(since: start)) ms): \(message)")
             throw ZSPError.aws(code: code, message: message)
         }
+        Log.debug("aws", "\(what) ok in \(Log.milliseconds(since: start)) ms")
         return doc
     }
 
@@ -203,5 +215,24 @@ public final class AWSQueryService: AWSService {
 
     public func deleteUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws {
         _ = try call(Self.iam, "DeleteUserPolicy", [("UserName", userName), ("PolicyName", policyName)], c)
+    }
+}
+
+/// What went wrong reaching AWS, in words that say what to check.
+func networkMessage(_ error: Error, host: String) -> String {
+    let base = "cannot reach \(host)"
+    guard let e = error as? URLError else { return "\(base): \(error.localizedDescription)" }
+    switch e.code {
+    case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+        return "\(base): this Mac is offline"
+    case .timedOut:
+        return "\(base): no answer in 20 s (a VPN, proxy or firewall may be blocking it)"
+    case .cannotFindHost, .dnsLookupFailed:
+        return "\(base): its name does not resolve (check DNS or the VPN)"
+    case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+         .serverCertificateHasUnknownRoot, .clientCertificateRejected:
+        return "\(base): the secure connection failed (a proxy that inspects HTTPS, or a wrong clock)"
+    default:
+        return "\(base): \(e.localizedDescription)"
     }
 }
