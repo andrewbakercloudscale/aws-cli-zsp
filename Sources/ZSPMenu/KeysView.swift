@@ -30,6 +30,8 @@ struct KeysView: View {
 struct KeyCard: View {
     @EnvironmentObject var model: Model
     let profile: ProfileMeta
+    /// The last requester is a whole command line, often far wider than the card.
+    @State private var expanded = false
 
     var body: some View {
         Card {
@@ -55,8 +57,22 @@ struct KeyCard: View {
                         if profile.readOnly { Pill(text: "read-only · client's key", symbol: "eye", color: Theme.slate) }
                         else if IAMPermission.allCases.contains(where: profile.cannot) { Pill(text: "limited IAM", symbol: "eye", color: Theme.slate) }
                     }
-                    Text(usedLine).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    if let arn = profile.arn { Text(arn).font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
+                    Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(usedLine).font(.callout).foregroundStyle(.secondary)
+                                if let arn = profile.arn { Text(arn).font(.caption).foregroundStyle(.tertiary) }
+                            }
+                            .lineLimit(expanded ? nil : 1).truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: expanded)
+                            .textSelection(.enabled)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help(expanded ? "Collapse" : "Show the full command and ARN")
                 }
                 Spacer(minLength: 0)
             }
