@@ -40,7 +40,7 @@ public struct SupportReport {
         section("Profiles", profiles())
         section("credential_process wiring", wiring())
         section("Support log (last 200 lines)", Log.recent(paths, limit: 200).map(\.text))
-        section("Audit trail (last 50 entries)", audit())
+        section("Audit trail (last 200 entries)", audit())
         section("Watcher output (last 40 lines)", tail(paths.watchLog, 40))
         return out.map(Self.clean).joined(separator: "\n") + "\n"
     }
@@ -99,7 +99,7 @@ public struct SupportReport {
     }
 
     func audit() -> [String] {
-        vault.audit.entries(limit: 50).map { e in
+        vault.audit.entries(limit: 200).map { e in
             let detail = e.detail.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
             return "\(e.ts) \(e.ok ? " " : "!")\(e.event) \(e.profile ?? "-") \(detail)"
         }

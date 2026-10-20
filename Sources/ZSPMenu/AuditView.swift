@@ -14,6 +14,8 @@ struct AuditView: View {
                 Button { model.verify(report: true) } label: { Label("Verify chain", systemImage: "checkmark.seal") }.buttonStyle(.pill(Theme.teal))
                     .help("Recompute every entry's hash and compare the newest with the sealed copy in the vault")
                 Button { model.revealAuditFile() } label: { Label("Show audit file", systemImage: "doc.text.magnifyingglass") }.buttonStyle(.pill(Theme.slate))
+                Button { model.saveDiagnostics() } label: { Label("Export…", systemImage: "square.and.arrow.up") }.buttonStyle(.pill(Theme.slate))
+                    .help("Save a redacted report for support: this trail, the support log's errors and the health checks, with no secrets")
             }
             Divider()
             LazyVStack(alignment: .leading, spacing: 6) {
