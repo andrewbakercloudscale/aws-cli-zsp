@@ -67,9 +67,9 @@ struct Hero: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {
-                StatTile(value: "\(model.profiles.count)", label: "keys")
-                StatTile(value: "\(model.profiles.filter { $0.sessionActive() }.count)", label: "sessions")
-                StatTile(value: "\(usesToday)", label: "uses today")
+                StatTile(value: "\(model.profiles.count)", label: "keys") { model.tab = .keys }
+                StatTile(value: "\(model.profiles.filter { $0.sessionActive() }.count)", label: "sessions") { model.tab = .keys }
+                StatTile(value: "\(usesToday)", label: "uses today") { model.tab = .audit }
             }
         }
         .foregroundStyle(.white)
@@ -86,14 +86,21 @@ struct Hero: View {
 struct StatTile: View {
     let value: String
     let label: String
+    /// Opens the tab that lists what the number counts.
+    let open: () -> Void
 
     var body: some View {
-        VStack(spacing: 2) {
-            Text(value).font(.title2.weight(.bold)).monospacedDigit()
-            Text(label).font(.caption.weight(.medium)).opacity(0.85)
+        Button(action: open) {
+            VStack(spacing: 2) {
+                Text(value).font(.title2.weight(.bold)).monospacedDigit()
+                Text(label).font(.caption.weight(.medium)).opacity(0.85)
+            }
+            .frame(width: 70, height: 58)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.16)))
+            .contentShape(Rectangle())
         }
-        .frame(width: 70, height: 58)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.16)))
+        .buttonStyle(.plain)
+        .help("Show \(label)")
     }
 }
 
