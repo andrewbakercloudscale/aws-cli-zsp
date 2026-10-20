@@ -304,7 +304,7 @@ and any error banner has a **Save diagnostics for support…** link.
 - **Diagnostics report:** `aws-cli-zsp diagnostics`, or **Save diagnostics…** in the panel,
   writes `~/Desktop/aws-cli-zsp-diagnostics-<date>.txt` (readable by you only): versions,
   checks, settings, profiles, credential_process lines, the last 200 log lines and the last
-  50 audit entries. Secrets, session tokens and MFA seeds are removed, key ids are masked
+  200 audit entries. Secrets, session tokens and MFA seeds are removed, key ids are masked
   and account ids keep only their last 4 digits, so it is safe to attach to a ticket.
 - **Error messages** carry a hint for the common AWS and Keychain errors: clock skew,
   InvalidClientTokenId (key deleted or deactivated), ExpiredToken, MFA refused, throttling,
