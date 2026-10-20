@@ -74,6 +74,13 @@ Menu bar app (ZSPMenu) ── reads metadata and the audit log; every action she
    proves signing and the transport work end to end). The real `~/.aws` is not touched.
 6. ✅ **README and repo**: commit locally.
 
+7. ✅ **Support (0.3.3)**: a redacted support log (`Log`, `Redact`), AWS errors logged with
+   their RequestId, swallowed `try?` failures now logged and audited, a damaged
+   profiles.json set aside instead of overwritten, the doctor in ZSPCore with fixes and the
+   checks for common problems (clock skew, keys in shell files, AWS CLI, Touch ID, recent
+   errors), `aws-cli-zsp diagnostics`, and Recent problems / Save diagnostics in the panel.
+   Vault, CLI and app views split into files by area; audit events are one enum.
+
 ## Needs your go-ahead (not done automatically)
 
 - **Live migration** (`zsp install`): it rewrites your real `~/.aws` files. Other running

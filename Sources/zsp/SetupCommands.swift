@@ -69,7 +69,7 @@ func doctorChecks(network: Bool = true) -> [Check] {
 func cmdDoctor() {
     let checks = doctorChecks()
     let failed = checks.filter { !$0.ok }
-    if !failed.isEmpty { Log.warning("doctor", "failed: \(failed.map(\.name).joined(separator: ", "))") }
+    if !failed.isEmpty { Log.info("doctor", "checks not passing: \(failed.map(\.name).joined(separator: ", "))") }
     done(checks, checks.map { "\($0.symbol) \($0.name): \($0.detail)" }.joined(separator: "\n")
          + "\n\(failed.isEmpty ? "all checks pass" : "\(failed.count) check(s) failed")")
 }

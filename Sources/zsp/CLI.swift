@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.3.2"
+let version = "0.3.3"
 
 let usage = """
 aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.

@@ -246,6 +246,7 @@ and `iam:PutUserPolicy` on itself for these commands, and `iam:DeleteUserPolicy`
 aws-cli-zsp setup [--move P,..] [--keep P,..] [--auto on|off] [--duration 1h]
                                               choose what moves and whether new keys move automatically
 aws-cli-zsp doctor                            every check that must pass to be protected, no prompt
+aws-cli-zsp diagnostics [--output FILE]       a redacted report for support (default: on the Desktop)
 aws-cli-zsp test --profile P                  a real AWS call (GetCallerIdentity) with the key
 aws-cli-zsp selftest-watcher                  write AWS's example key to ~/.aws and time the move
 aws-cli-zsp list                              keys in the vault, sessions, last use and by whom
@@ -275,6 +276,41 @@ aws-cli-zsp uninstall [--restore-plaintext]
 ```
 
 `--json` on any command prints a machine-readable result, which is what the menu bar app uses.
+
+## Support and diagnostics
+
+When something does not work, open the panel: **Overview › Health checks › Run checks**.
+Each check says what is wrong in plain words, and the ones one command can fix have a
+**Repair** or **Move now** button. Besides the vault, ~/.aws and the watcher, the checks
+look for the problems people actually hit:
+
+| Check | What it catches |
+|---|---|
+| AWS reachable | offline, VPN or proxy in the way, DNS, and a Mac clock more than 4 minutes off (AWS refuses signed requests at 5) |
+| No keys in shell files | `export AWS_ACCESS_KEY_ID=…` in `~/.zshrc` and the like: the AWS CLI prefers it to any profile, so the vault is bypassed |
+| AWS CLI wired to the vault | a `credential_process` line pointing at a moved or old copy of the app |
+| AWS CLI | not installed, or version 1 |
+| Touch ID | no sensor or lid closed: macOS asks for the login password instead |
+| Keys active in AWS | a key someone deactivated in the IAM console |
+| Errors in the last day | the latest error from the support log |
+
+Warnings and errors also show as **Recent problems** on the Overview until you dismiss them,
+and any error banner has a **Save diagnostics for support…** link.
+
+- **Support log:** `~/Library/Application Support/aws-cli-zsp/logs/aws-cli-zsp.log`
+  (rotated at 1 MB). Every AWS call that fails is logged with its HTTP status, AWS error
+  code and RequestId, so AWS support can find it. Also in Console.app under the subsystem
+  `consulting.cloudscale.zsp`. `ZSP_DEBUG=1` adds every call with its timing.
+- **Diagnostics report:** `aws-cli-zsp diagnostics`, or **Save diagnostics…** in the panel,
+  writes `~/Desktop/aws-cli-zsp-diagnostics-<date>.txt` (readable by you only): versions,
+  checks, settings, profiles, credential_process lines, the last 200 log lines and the last
+  50 audit entries. Secrets, session tokens and MFA seeds are removed, key ids are masked
+  and account ids keep only their last 4 digits, so it is safe to attach to a ticket.
+- **Error messages** carry a hint for the common AWS and Keychain errors: clock skew,
+  InvalidClientTokenId (key deleted or deactivated), ExpiredToken, MFA refused, throttling,
+  a locked Keychain and a cancelled prompt.
+- A damaged `profiles.json` is moved aside as `profiles.json.damaged-<time>` and logged,
+  never overwritten; the keys themselves are in the vault and unaffected.
 
 ## Limits
 
@@ -347,7 +383,7 @@ restricted to this app alone.
 ## Development
 
 ```bash
-swift test                               # 44 tests, including the real Secure Enclave (no-prompt tier)
+swift test                               # 65 tests, including the real Secure Enclave (no-prompt tier)
 ZSP_NETWORK_TESTS=1 swift test           # adds a real STS call with a fake key (expects InvalidClientTokenId)
 ```
 

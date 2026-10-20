@@ -190,7 +190,7 @@ public struct Doctor {
                 return Check(name: "AWS reachable", ok: false,
                              detail: "yes, but this Mac's clock is \(Int(off / 60)) min \(skew > 0 ? "ahead" : "behind"): AWS refuses signed requests 5 minutes off. Set the time automatically in System Settings › General › Date & Time")
             }
-            return Check(name: "AWS reachable", ok: true, detail: "STS answers, and the clock is within \(max(Int(off), 1)) s of AWS's")
+            return Check(name: "AWS reachable", ok: true, detail: "STS answers, and this Mac's clock agrees with AWS's (\(Int(off.rounded())) s apart)")
         case let .failed(message):
             return Check(name: "AWS reachable", ok: false, detail: message)
         }
@@ -260,10 +260,11 @@ enum AWSProbe {
         final class Box: @unchecked Sendable { var result: Result = .failed("no answer from AWS") }
         let box = Box()
         let done = DispatchSemaphore(value: 0)
-        var request = URLRequest(url: url, timeoutInterval: timeout)
+        // Never from a cache: a cached answer carries an old Date header.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
         request.httpMethod = "GET"
         let sent = Date()
-        URLSession.shared.dataTask(with: request) { _, response, error in
+        URLSession(configuration: .ephemeral).dataTask(with: request) { _, response, error in
             if let error {
                 box.result = .failed(networkMessage(error, host: host))
             } else if let date = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Date").flatMap(httpDate) {

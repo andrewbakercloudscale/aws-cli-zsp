@@ -114,7 +114,7 @@ public enum Log {
 }
 
 /// One line of the support log: `2026-10-20T09:15:02.120Z ERROR cli[812] vault: message`.
-public struct LogLine: Codable, Equatable, Sendable {
+public struct LogLine: Codable, Hashable, Sendable {
     public var date: Date
     public var level: Log.Level
     public var process: String
