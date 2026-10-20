@@ -73,6 +73,13 @@ struct KeyCard: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(expanded ? "Collapse" : "Show the full command and ARN")
+                    if expanded {
+                        HStack(spacing: 8) {
+                            if let r = profile.lastRequester { CopyButton(title: "Copy command", text: r) }
+                            if let arn = profile.arn { CopyButton(title: "Copy ARN", text: arn) }
+                        }
+                        .padding(.leading, 16)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -118,6 +125,23 @@ struct KeyCard: View {
     var usedLine: String {
         guard let used = profile.lastUsedAt else { return "Not used since it was moved here" }
         return "Used \(used.formatted(.relative(presentation: .named)))" + (profile.lastRequester.map { " by \($0)" } ?? "")
+    }
+}
+
+/// Puts `text` on the clipboard and says so for a moment.
+struct CopyButton: View {
+    let title: String
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+        } label: { Label(copied ? "Copied" : title, systemImage: copied ? "checkmark" : "doc.on.doc").font(.caption) }
+            .buttonStyle(.borderless)
     }
 }
 
