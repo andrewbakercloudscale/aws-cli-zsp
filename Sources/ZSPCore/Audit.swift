@@ -254,7 +254,13 @@ public final class AuditLog {
         }
         guard anchor != nil else { return AuditVerification(entries: count, intact: true, anchored: nil, problem: nil) }
         guard let sealed else {
-            // No sealed copy at all, though entries were written with one: removed, or unreadable.
+            // There but not readable now (a locked Mac cannot use the enclave): only the chain
+            // could be checked, which is not tampering.
+            if (try? anchor?.accounts(.auditHead).contains("head")) == true {
+                Log.warning("audit", "the sealed copy of the newest entry cannot be opened right now; checked the chain only")
+                return AuditVerification(entries: count, intact: true, anchored: nil, problem: nil)
+            }
+            // No sealed copy at all, though entries were written with one: it was removed.
             return AuditVerification(entries: count, intact: false, anchored: nil,
                                      problem: "the sealed copy of the newest entry is missing from the vault")
         }
