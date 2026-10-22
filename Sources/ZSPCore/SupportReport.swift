@@ -92,7 +92,7 @@ public struct SupportReport {
 
     /// Each profile section's credential_process line, as the AWS CLI sees it.
     func wiring() -> [String] {
-        let config = INIDocument(paths.text(paths.configFile))
+        let config = INIDocument((try? paths.text(paths.configFile)) ?? "")
         return vault.list().map { p in
             "\(p.profile): \(config.value("credential_process", in: AWSFiles.configSection(for: p.profile)) ?? "(not set)")"
         }
@@ -106,7 +106,7 @@ public struct SupportReport {
     }
 
     func tail(_ url: URL, _ n: Int) -> [String] {
-        Array(paths.text(url).split(separator: "\n").suffix(n).map(String.init))
+        Array(((try? paths.text(url)) ?? "").split(separator: "\n").suffix(n).map(String.init))
     }
 
     func sysctl(_ name: String) -> String {

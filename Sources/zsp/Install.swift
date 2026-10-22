@@ -27,7 +27,15 @@ func load(_ label: String, _ plist: [String: Any]) throws {
     try data.write(to: url)
     let domain = "gui/\(getuid())"
     _ = launchctl(["bootout", "\(domain)/\(label)"])
-    guard launchctl(["bootstrap", domain, url.path]) == 0 else { throw ZSPError.io("launchctl could not load \(url.path)") }
+    // bootout returns before launchd has let go of the label, and a bootstrap in that window
+    // fails (error 5): wait for it to be gone, then retry a few times.
+    for _ in 0..<20 where agentLoaded(label) { Thread.sleep(forTimeInterval: 0.1) }
+    var status = launchctl(["bootstrap", domain, url.path])
+    for _ in 0..<4 where status != 0 {
+        Thread.sleep(forTimeInterval: 0.5)
+        status = launchctl(["bootstrap", domain, url.path])
+    }
+    guard status == 0 else { throw ZSPError.io("launchctl could not load \(url.path) (status \(status))") }
 }
 
 func cmdInstall() throws {
@@ -44,7 +52,13 @@ func cmdInstall() throws {
     let localBin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
     try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
     let link = localBin.appendingPathComponent("aws-cli-zsp")
-    try? FileManager.default.removeItem(at: link)
+    // Only our own earlier link is replaced: a file or a link to something else there is the user's.
+    if let existing = try? FileManager.default.destinationOfSymbolicLink(atPath: link.path) {
+        guard existing.contains("aws-cli-zsp") else { fail("\(link.path) is a link to \(existing), not to aws-cli-zsp: move it, then install again") }
+        try FileManager.default.removeItem(at: link)
+    } else if FileManager.default.fileExists(atPath: link.path) {
+        fail("\(link.path) already exists and is not a link to aws-cli-zsp: move it, then install again")
+    }
     // The command was called zsp before 0.2.0.
     let oldLink = localBin.appendingPathComponent("zsp")
     if (try? FileManager.default.destinationOfSymbolicLink(atPath: oldLink.path))?.contains("aws-cli-zsp") == true {
@@ -99,6 +113,9 @@ func loadWatcher(bin: String) throws {
 }
 
 func cmdUninstall() throws {
+    // Asked before anything is removed, so "no" leaves everything as it was.
+    let restore = opts.flags.contains("--restore-plaintext")
+    if restore { confirm("Write every key back into \(paths.credentialsFile.path) in plain text?") }
     let domain = "gui/\(getuid())"
     for label in [watchLabel, menuLabel] {
         _ = launchctl(["bootout", "\(domain)/\(label)"])
@@ -111,10 +128,7 @@ func cmdUninstall() throws {
         }
     }
     var restored: [String] = []
-    if opts.flags.contains("--restore-plaintext") {
-        confirm("Write every key back into \(paths.credentialsFile.path) in plain text?")
-        restored = try makeVault().restorePlaintext()
-    }
+    if restore { restored = try makeVault().restorePlaintext() }
     _ = try? makeVault().audit.append(.uninstalled, detail: ["restored": restored.joined(separator: ",")])
     done(restored, restored.isEmpty
         ? "agents removed; keys stay in the vault and profiles still use aws-cli-zsp (remove the app last, or run with --restore-plaintext)"

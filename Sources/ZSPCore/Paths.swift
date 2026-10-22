@@ -32,9 +32,15 @@ public struct Paths: Sendable, Equatable {
     public var logFile: URL { supportDir.appendingPathComponent("logs/aws-cli-zsp.log") }
     public var mfaCountersFile: URL { supportDir.appendingPathComponent("mfa-counters.json") }
 
-    /// A file's text, or "" when it does not exist yet (a fresh ~/.aws).
-    public func text(_ url: URL) -> String {
-        (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    /// A file's text, or "" when it does not exist yet (a fresh ~/.aws). Any other failure
+    /// throws: a file that could not be read must never be written back as if it were empty.
+    public func text(_ url: URL) throws -> String {
+        guard FileManager.default.fileExists(atPath: url.path) else { return "" }
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw ZSPError.io("cannot read \(url.path) as UTF-8 text, so it was left as it is: \(error.localizedDescription)")
+        }
     }
 
     /// A lock file for `name`. Profile names can hold anything, so they are reduced to a safe
@@ -70,15 +76,37 @@ public func withFileLock<T>(_ url: URL, _ body: () throws -> T) throws -> T {
 /// written through the link rather than replacing the link.
 public func writeAtomically(_ text: String, to url: URL, mode: Int = 0o600) throws {
     let target = url.resolvingSymlinksInPath()
+    try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+    try replaceFile(Data(text.utf8), at: target, mode: mode)
+}
+
+/// Writes `data` to a new file created with `mode` (never briefly wider), flushes it, then
+/// renames it over `target`: after a crash the file is the old one or the new one, whole.
+func replaceFile(_ data: Data, at target: URL, mode: Int = 0o600) throws {
     let dir = target.deletingLastPathComponent()
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     let tmp = dir.appendingPathComponent(".\(target.lastPathComponent).zsp-\(getpid())-\(UUID().uuidString.prefix(8))")
-    guard FileManager.default.createFile(atPath: tmp.path, contents: Data(text.utf8), attributes: [.posixPermissions: mode]) else {
-        throw ZSPError.io("cannot write \(tmp.path)")
+    let fd = open(tmp.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, mode_t(mode))
+    guard fd >= 0 else { throw ZSPError.io("cannot create \(tmp.path): \(String(cString: strerror(errno)))") }
+    var failure: String?
+    data.withUnsafeBytes { buf in
+        var offset = 0
+        while offset < buf.count, failure == nil {
+            let n = write(fd, buf.baseAddress! + offset, buf.count - offset)
+            if n < 0, errno != EINTR { failure = String(cString: strerror(errno)) } else if n > 0 { offset += n }
+        }
+    }
+    if failure == nil, fchmod(fd, mode_t(mode)) != 0 || fsync(fd) != 0 { failure = String(cString: strerror(errno)) }
+    close(fd)
+    if let failure {
+        unlink(tmp.path)
+        throw ZSPError.io("cannot write \(tmp.path): \(failure)")
     }
     guard rename(tmp.path, target.path) == 0 else {
         let reason = String(cString: strerror(errno))
         unlink(tmp.path)
         throw ZSPError.io("cannot replace \(target.path): \(reason)")
     }
+    let dirfd = open(dir.path, O_RDONLY)
+    if dirfd >= 0 { fsync(dirfd); close(dirfd) }
 }

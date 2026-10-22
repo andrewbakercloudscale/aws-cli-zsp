@@ -22,6 +22,10 @@ public final class EnclaveStore: SecretStore {
     /// The LAContext carrying the reason shown in the Touch ID dialog, set by
     /// DeviceOwnerPresence just before a guarded read.
     public var context: () -> LAContext? = { nil }
+    /// Where the hash of the guarded public key is pinned (the login Keychain). Sealing needs
+    /// only that public key, read from a file anything running as you can rewrite: without
+    /// the pin, a program could swap in its own key and read every key sealed after that.
+    public var keyPins: SecretStore?
 
     public init(dir: URL) {
         self.dir = dir
@@ -45,7 +49,11 @@ public final class EnclaveStore: SecretStore {
 
     /// Writing needs only the public half, so moving a key in never asks for Touch ID.
     func publicKey(_ t: Tier) throws -> P256.KeyAgreement.PublicKey {
-        if let raw = try? Data(contentsOf: publicKeyURL(t)) { return try P256.KeyAgreement.PublicKey(x963Representation: raw) }
+        if let raw = try? Data(contentsOf: publicKeyURL(t)) {
+            let key = try P256.KeyAgreement.PublicKey(x963Representation: raw)
+            if t == .guarded { try checkGuarded(raw) }
+            return key
+        }
         guard SecureEnclave.isAvailable else { throw ZSPError.invalid("this Mac has no Secure Enclave") }
         var error: Unmanaged<CFError>?
         let flags: SecAccessControlCreateFlags = t == .guarded ? [.privateKeyUsage, .userPresence] : [.privateKeyUsage]
@@ -56,7 +64,39 @@ public final class EnclaveStore: SecretStore {
         try ensureDir(keyURL(t).deletingLastPathComponent())
         try writeData(key.dataRepresentation, to: keyURL(t))
         try writeData(key.publicKey.x963Representation, to: publicKeyURL(t))
+        if t == .guarded { try checkGuarded(key.publicKey.x963Representation) }
         return key.publicKey
+    }
+
+    /// Refuses to seal to a guarded public key that is not this vault's: it must belong to the
+    /// enclave key beside it, and match the hash pinned the first time it was used.
+    func checkGuarded(_ raw: Data) throws {
+        func refuse(_ why: String) -> ZSPError {
+            Log.error("vault", "refused to seal: \(why)")
+            return .auth("""
+                Nothing was stored: the vault's sealing key (\(publicKeyURL(.guarded).path)) is not the one this Mac \
+                created (\(why)). Something running as you may have replaced it. Run aws-cli-zsp doctor.
+                """)
+        }
+        if let blob = try? Data(contentsOf: keyURL(.guarded)) {
+            // Rebuilding the key object from its blob and reading its public half needs no Touch ID.
+            let paired = try? SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob).publicKey.x963Representation
+            guard paired == raw else { throw refuse("it does not belong to the enclave key beside it") }
+        }
+        guard let keyPins else { return }
+        let hash = Data(SigV4.sha256Hex(raw).utf8)
+        let pinned: Data?
+        do {
+            pinned = try keyPins.read(.sealingKey, "guarded")
+        } catch {
+            throw ZSPError.keychain(-1, "Could not read the pinned sealing key from the login Keychain (\(error.localizedDescription)). Unlock the Mac and try again.")
+        }
+        guard let pinned else {
+            try keyPins.write(.sealingKey, "guarded", hash)
+            Log.info("vault", "pinned the sealing key")
+            return
+        }
+        guard pinned == hash else { throw refuse("it does not match the key pinned in the login Keychain") }
     }
 
     func privateKey(_ t: Tier) throws -> SecureEnclave.P256.KeyAgreement.PrivateKey {
@@ -139,10 +179,6 @@ public final class EnclaveStore: SecretStore {
     }
 
     func writeData(_ data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(getpid()).tmp")
-        guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-            throw ZSPError.io("cannot write \(tmp.path)")
-        }
-        guard rename(tmp.path, url.path) == 0 else { unlink(tmp.path); throw ZSPError.io("cannot replace \(url.path)") }
+        try replaceFile(data, at: url)
     }
 }

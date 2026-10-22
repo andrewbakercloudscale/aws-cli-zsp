@@ -114,28 +114,45 @@ public enum Requester {
         return args
     }
 
+    static let keyId = try! NSRegularExpression(pattern: "\\b(AKIA|ASIA)[A-Z0-9]{16}\\b")
+
     /// Keeps secrets typed on a command line (`aws configure set aws_secret_access_key …`)
     /// out of the audit log.
     public static func redact(_ args: [String]) -> [String] {
         var out: [String] = []
         var hideNext = false
-        for a in args {
+        for raw in args {
+            let a = maskKeyIds(raw)
             let lower = a.lowercased()
             if hideNext {
                 out.append("[redacted]")
                 hideNext = false
             } else if lower.contains("secret") || lower.contains("token") || lower.contains("password") {
-                if let eq = a.firstIndex(of: "=") {
-                    out.append(String(a[...eq]) + "[redacted]")
-                } else {
+                if a.allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) {
+                    // A name (`aws_secret_access_key`, `--session-token`): the value follows it.
                     out.append(a)
                     hideNext = true
+                } else if let eq = a.firstIndex(of: "="), a[..<eq].allSatisfy({ $0.isLetter || $0.isNumber || "-_.".contains($0) }) {
+                    out.append(String(a[...eq]) + "[redacted]")
+                } else {
+                    // The secret is inside the argument itself (`{"SecretAccessKey": …}`).
+                    out.append("[redacted]")
                 }
             } else if a.count >= 30, a.allSatisfy({ $0.isLetter || $0.isNumber || "/+=".contains($0) }) {
                 out.append("[redacted]")
             } else {
                 out.append(a)
             }
+        }
+        return out
+    }
+
+    /// An access key id is not a secret, but the audit trail shows it masked everywhere else.
+    static func maskKeyIds(_ s: String) -> String {
+        var out = s
+        for m in keyId.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
+            guard let r = Range(m.range, in: out) else { continue }
+            out.replaceSubrange(r, with: maskKeyId(String(out[r])))
         }
         return out
     }

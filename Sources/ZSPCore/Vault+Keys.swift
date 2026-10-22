@@ -55,15 +55,22 @@ extension Vault {
             let fresh = try aws.createAccessKey(admin)
             // Stored before anything else happens: the new secret is never only in memory. The
             // MFA device belongs to the user, not the key, so it carries over.
-            try writeMaster(MasterKey(accessKeyId: fresh.accessKeyId, secretAccessKey: fresh.secretAccessKey, sessionToken: nil,
-                                      importedAt: now(), source: "rotated", mfaSerial: master.mfaSerial, mfaSeed: master.mfaSeed), profile)
+            do {
+                try writeMaster(MasterKey(accessKeyId: fresh.accessKeyId, secretAccessKey: fresh.secretAccessKey, sessionToken: nil,
+                                          importedAt: now(), source: "rotated", mfaSerial: master.mfaSerial, mfaSeed: master.mfaSeed), profile)
+            } catch {
+                // Its secret is about to be lost: a key nobody holds would only use up the user's second slot.
+                bestEffort("delete the new key that could not be stored") { try aws.deleteAccessKey(admin, keyId: fresh.accessKeyId) }
+                recordFailure(.keyRotateFailed, profile: profile, detail: ["new": maskKeyId(fresh.accessKeyId), "step": "store"], error: error)
+                throw error
+            }
             bestEffort("audit the new key") { try audit.append(.keyCreated, profile: profile, detail: ["keyId": maskKeyId(fresh.accessKeyId)]) }
-            try meta.update(profile) {
+            bestEffort("note the new key of \(profile)") { try meta.update(profile) {
                 $0?.previousKeyId = old.accessKeyId
                 $0?.accessKeyId = fresh.accessKeyId
                 $0?.source = "rotated"
                 $0?.temporary = false
-            }
+            } }
             do {
                 _ = try retryingNewKey { try aws.getCallerIdentity(fresh) }
                 // Without MFA the new key retires the old one; with it, the MFA session from the old key
@@ -81,6 +88,8 @@ extension Vault {
             try dropSession(profile)
             let t = now()
             try meta.update(profile) {
+                $0?.accessKeyId = fresh.accessKeyId
+                $0?.previousKeyId = old.accessKeyId
                 $0?.rotatedAt = t
                 $0?.importedAt = t
                 $0?.keyStatus = "Active"

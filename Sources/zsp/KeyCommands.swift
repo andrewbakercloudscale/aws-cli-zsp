@@ -25,6 +25,9 @@ func cmdImport() throws {
 }
 
 func cmdScan() {
+    // A file that cannot be read may hold keys: never report it as clean.
+    let unreadable = Scanner.unreadable(paths)
+    if !unreadable.isEmpty { fail("cannot read \(unreadable.joined(separator: ", ")) (not UTF-8 text, or no permission), so it was not scanned") }
     let findings = Scanner.scan(paths)
     if opts.json {
         printJSON(Envelope(ok: findings.isEmpty, result: findings, error: findings.isEmpty ? nil : "plaintext keys found"))
@@ -87,6 +90,9 @@ func cmdList() {
 
 func cmdCredentialProcess() {
     let profile = requireProfile()
+    if inSandbox {
+        FileHandle.standardError.write(Data("aws-cli-zsp: ZSP_HOME is set, so the vault in \(paths.supportDir.path) is used, without account pins\n".utf8))
+    }
     do {
         let c = try makeVault().credentials(for: profile, requester: Requester.describe(), asker: Requester.summary())
         var out: [String: Any] = ["Version": 1, "AccessKeyId": c.accessKeyId, "SecretAccessKey": c.secretAccessKey]
@@ -96,7 +102,9 @@ func cmdCredentialProcess() {
         FileHandle.standardOutput.write(data)
         exit(0)
     } catch {
-        Log.warning("credential-process", "\(profile): \(error.localizedDescription)")
+        // An error, not a warning: the AWS CLI shows the user nothing else, and Doctor's
+        // "Errors in the last day" counts only errors.
+        Log.error("credential-process", "\(profile): \(error.localizedDescription)")
         FileHandle.standardError.write(Data("aws-cli-zsp: \(error.localizedDescription)\n".utf8))
         exit(1)
     }
@@ -291,7 +299,9 @@ func cmdPin() throws {
 func cmdApprove() throws {
     let profile = requireProfile()
     guard let code = opts.rest.first else { fail("usage: aws-cli-zsp approve --profile \(profile) CODE (the 6 digits from your MFA app)") }
-    let c = try makeVault().approve(profile, code: code, requester: Requester.describe(pid: getpid()))
+    // The code is spent once used, but it still stays out of the audit trail and the support log.
+    let requester = Requester.describe(pid: getpid()).replacingOccurrences(of: code, with: "[code]")
+    let c = try makeVault().approve(profile, code: code, requester: requester)
     let until = c.expiration.map { " until \(clock($0))" } ?? ""
     done(["profile": profile, "expires": c.expiration.map(iso8601) ?? ""], "approved: \(profile) has a session\(until); aws commands with --profile \(profile) now work")
 }

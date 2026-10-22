@@ -23,6 +23,7 @@ extension Vault {
             try requireEnforced(profile, master)
             let session = try adminCredentials(master)
             let (user, identity) = try iamUser(session)
+            try requireEnforcedInAWS(session, user: user, profile)
             let device = try aws.createVirtualMFADevice(session, name: deviceName)
             let label = "\(user)@\(identity.account) (\(profile))".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? user
             try audit.append(.phoneCreated, profile: profile, detail: ["device": device.serial])
@@ -41,6 +42,7 @@ extension Vault {
             try requireEnforced(profile, master)
             let session = try adminCredentials(master)
             let (user, _) = try iamUser(session)
+            try requireEnforcedInAWS(session, user: user, profile)
             try aws.enableMFADevice(session, userName: user, serial: serial, code1: code1, code2: code2)
             try keepRemoteCopy(profile, master, serial)
         }
@@ -59,6 +61,45 @@ extension Vault {
         }
     }
 
+    /// profiles.json only says enforcement was turned on here; the remote copy is safe only
+    /// while AWS still has the policy (nobody deleted it in the console).
+    func requireEnforcedInAWS(_ session: AWSCredentials, user: String, _ profile: String) throws {
+        let document = try aws.getUserPolicy(session, userName: user, policyName: Self.requireMFAPolicyName)
+        guard let document, Self.demandsMFA(document) else {
+            throw ZSPError.invalid("""
+                IAM user \(user) does not have the \(Self.requireMFAPolicyName) policy that makes AWS demand MFA \
+                (it was removed or changed in AWS). Run aws-cli-zsp mfa enforce --profile \(profile) again first.
+                """)
+        }
+    }
+
+    /// Whether `document` holds the statement that denies everything without MFA, as written by `mfa enforce`.
+    static func demandsMFA(_ document: String) -> Bool {
+        func statement(_ json: String) -> NSDictionary? {
+            let doc = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+            let statements = doc?["Statement"] as? [[String: Any]] ?? []
+            return statements.first { $0["Sid"] as? String == "AwsCliZspRequireMfa" }.map { $0 as NSDictionary }
+        }
+        guard let found = statement(document), let wanted = statement(requireMFAPolicy) else { return false }
+        return found.isEqual(wanted)
+    }
+
+    /// After a session approved by phone code: if AWS no longer demands MFA, the copy that
+    /// opens without Touch ID is a working key, so it and the session are dropped.
+    func confirmStillEnforced(_ profile: String, _ session: AWSCredentials, requester: String) throws {
+        do {
+            try requireEnforcedInAWS(session, user: try iamUser(session).user, profile)
+        } catch let ZSPError.aws(code, _) where Self.deniedCodes.contains(code) {
+            Log.warning("mfa", "\(profile) may not read its own policies (\(code)); approval by code goes ahead unchecked")
+        } catch {
+            bestEffort("drop the session of \(profile)") { try dropSession(profile) }
+            bestEffort("turn off approval by code for \(profile)") { try disableRemote(profile) }
+            recordFailure(.authDenied, profile: profile, detail: ["for": "approval by MFA code", "why": "MFA no longer enforced in AWS"],
+                          requester: requester, error: error)
+            throw error
+        }
+    }
+
     func keepRemoteCopy(_ profile: String, _ master: MasterKey, _ serial: String) throws {
         try store.write(.remote, profile, try ZSPJSON.encoder.encode(master.withoutMFASeed))
         try meta.update(profile) { $0?.remoteSerial = serial }
@@ -72,7 +113,9 @@ extension Vault {
         try guarded(profile, .mfa) {
             let master = try unlock(profile, reason: "let a code from your phone approve AWS profile “\(profile)” when you are away from the Mac")
             try requireEnforced(profile, master)
-            let devices = try aws.listMFADevices(try adminCredentials(master)).filter { $0 != master.mfaSerial }
+            let session = try adminCredentials(master)
+            try requireEnforcedInAWS(session, user: try iamUser(session).user, profile)
+            let devices = try aws.listMFADevices(session).filter { $0 != master.mfaSerial }
             let chosen = try choosePhone(profile, devices, serial)
             try keepRemoteCopy(profile, master, chosen)
             return chosen

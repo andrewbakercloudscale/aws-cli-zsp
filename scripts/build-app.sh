@@ -10,12 +10,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== tests"
-if ! swift test >/tmp/zsp-test.log 2>&1; then
-    tail -30 /tmp/zsp-test.log
+TEST_LOG="$(mktemp -t zsp-test)"
+trap 'rm -f "$TEST_LOG"' EXIT
+if ! swift test >"$TEST_LOG" 2>&1; then
+    tail -30 "$TEST_LOG"
     echo "tests failed, not building"
     exit 1
 fi
-grep -E "Executed [0-9]+ tests" /tmp/zsp-test.log | tail -1
+grep -E "Executed [0-9]+ tests" "$TEST_LOG" | tail -1
 
 echo "== build"
 swift build -c release
@@ -52,8 +54,12 @@ if pgrep -x ZSPMenu >/dev/null; then
     pkill -TERM -x ZSPMenu || true
     for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x ZSPMenu >/dev/null || break; sleep 0.3; done
 fi
+# Copied beside the old app first, then swapped in: a failed copy leaves the old app (which
+# every credential_process line points at) in place.
+rm -rf "$DEST.new"
+cp -R "$APP" "$DEST.new"
 rm -rf "$DEST"
-cp -R "$APP" "$DEST"
+mv "$DEST.new" "$DEST"
 echo "== installed: $DEST"
 
 if [[ "${1:-}" == "--install" ]]; then

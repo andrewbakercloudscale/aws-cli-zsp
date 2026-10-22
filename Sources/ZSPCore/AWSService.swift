@@ -10,6 +10,8 @@ public protocol AWSService {
     func deleteAccessKey(_ c: AWSCredentials, keyId: String) throws
     func getAccessKeyLastUsed(_ c: AWSCredentials, keyId: String) throws -> AccessKeyLastUsed
     func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws
+    /// An inline user policy's document, or nil when the user has no policy of that name.
+    func getUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws -> String?
     func listMFADevices(_ c: AWSCredentials) throws -> [String]
     /// A new virtual MFA device: its ARN and base32 seed.
     func createVirtualMFADevice(_ c: AWSCredentials, name: String) throws -> (serial: String, seed: String)
@@ -165,6 +167,18 @@ public final class AWSQueryService: AWSService {
 
     public func putUserPolicy(_ c: AWSCredentials, userName: String, policyName: String, document: String) throws {
         _ = try call(Self.iam, "PutUserPolicy", [("UserName", userName), ("PolicyName", policyName), ("PolicyDocument", document)], c)
+    }
+
+    public func getUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws -> String? {
+        let doc: XMLDocument
+        do {
+            doc = try call(Self.iam, "GetUserPolicy", [("UserName", userName), ("PolicyName", policyName)], c)
+        } catch ZSPError.aws(code: "NoSuchEntity", _) {
+            return nil
+        }
+        // URL-encoded JSON, as IAM returns every policy document.
+        let raw = try Self.required(doc, "PolicyDocument")
+        return raw.removingPercentEncoding ?? raw
     }
 
     public func listMFADevices(_ c: AWSCredentials) throws -> [String] {

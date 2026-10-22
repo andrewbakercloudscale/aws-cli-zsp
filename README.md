@@ -325,6 +325,7 @@ and any error banner has a **Save diagnostics for support…** link.
 | Malware running as you, **while a session is cached** | ⚠️ it can use that session until it expires (1 hour by default) |
 | Malware running as you **swapping your key for its own** | ✅ refused: the profile is pinned to its AWS account |
 | Malware running as you **planting a session of its own** | ✅ refused: only the session aws-cli-zsp issued is served |
+| Malware running as you **swapping the vault's sealing key** | ✅ refused: the sealing key is pinned in the login Keychain |
 | Malware running as you **rewiring `~/.aws/config`** to its own program | ⚠️ not prevented: **Run checks** shows it |
 | Malware running as you **rewriting the audit trail** | ⚠️ not prevented: see below |
 
@@ -354,10 +355,18 @@ do without Touch ID.
     vault by something else is deleted, not served (`session.swapped`).
   - Changed the key to another account yourself? `aws-cli-zsp pin reset --profile P`
     (Touch ID). Deleting or forgetting a key removes its pin.
+  - The public key itself is pinned the same way. Otherwise malware could replace the
+    vault's public key with one of its own, and every key sealed after that (a rotation, a
+    new key, the MFA seed) would be readable by it. aws-cli-zsp checks the public key
+    against the enclave key beside it and against its hash in the login Keychain before
+    every seal, and refuses on a mismatch.
 - **It can point `~/.aws/config` at a program of its own.** The `credential_process` line
   is a plain file; malware can change it so the AWS CLI asks something else for
   credentials. aws-cli-zsp is then not involved at all, so it cannot refuse anything.
-  **Run checks** (and `aws-cli-zsp doctor`) shows any profile not wired to aws-cli-zsp.
+  **Run checks** (and `aws-cli-zsp doctor`) shows any profile not wired to aws-cli-zsp:
+  the line must run exactly this binary for exactly that profile. Setting `ZSP_HOME` (meant
+  for demos and tests) in your shell is a variant: it points aws-cli-zsp at another vault
+  without account pins. `doctor` warns when it is set.
 - **It can rewrite the audit trail.** Each entry is hash-chained to the one before, and the
   newest hash is sealed in the vault, so editing or deleting entries by hand is caught by
   **Verify chain**. But that seal uses the no-prompt key (so sessions can be reused without
@@ -377,6 +386,16 @@ restricted to this app alone.
   are hidden (see Client keys above); sessions do not need any of them.
 - Profiles with `mfa_serial` and `role_arn` (AssumeRole with MFA) are not handled by
   aws-cli-zsp yet; its own MFA covers the key's direct use. See PLAN.md.
+- The "for aws s3 ls, from Claude Code" in the Touch ID dialog is what the asking process
+  says about itself (its command line), which that process controls. It helps you spot a
+  prompt you did not expect, but a malicious program can claim to be anything; decline any
+  prompt you did not cause.
+- Only the standard AWS partition works: sessions come from `sts.us-east-1.amazonaws.com`
+  and IAM calls go to `iam.amazonaws.com`, so keys for AWS China (`aws-cn`) or GovCloud
+  (`aws-us-gov`) are refused with InvalidClientTokenId.
+- Writing keys back with `uninstall --restore-plaintext`, or removing a key from this Mac,
+  is refused while MFA is enforced for it: this Mac's MFA lives only in the vault, so the
+  key would be locked out. Run `aws-cli-zsp mfa remove --profile P` first.
 - Away detection is a heuristic: 5 minutes without input (`ZSP_AWAY_AFTER`) or a locked
   screen. Sitting still and reading counts as away; touch the trackpad and retry.
 

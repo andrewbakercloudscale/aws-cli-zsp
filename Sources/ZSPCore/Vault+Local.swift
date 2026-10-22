@@ -4,9 +4,22 @@ import Foundation
 extension Vault {
     /// Removes the key from this Mac only. AWS still has it.
     public func forget(_ profile: String) throws {
+        try requireNotEnforced([profile], "removing it from this Mac")
         let master = try unlock(profile, reason: "remove the AWS key for profile “\(profile)” from this Mac")
         try audit.append(.keyForgotten, profile: profile, detail: ["keyId": maskKeyId(master.accessKeyId)])
         try removeLocal(profile)
+    }
+
+    /// This Mac's MFA seed exists only in the sealed key. Once AWS demands MFA for a key,
+    /// removing it here (or writing it back without the seed) leaves a key AWS refuses and no
+    /// way to make codes for it: enforcement has to come off first.
+    func requireNotEnforced(_ profiles: [String], _ what: String) throws {
+        let enforced = profiles.filter { meta.all()[$0]?.mfaEnforced == true }
+        guard !enforced.isEmpty else { return }
+        throw ZSPError.invalid("""
+            AWS requires this Mac's MFA for \(enforced.joined(separator: ", ")), and that MFA lives only in the vault, so \
+            \(what) would lock the key out. First run: \(enforced.map { "aws-cli-zsp mfa remove --profile \($0)" }.joined(separator: "; "))
+            """)
     }
 
     /// Everything this Mac holds for the profile: the key, its session and remote copy, its
@@ -30,7 +43,7 @@ extension Vault {
     public func rewire() throws -> [String] {
         let profiles = Set(try store.accounts(.master)).union(meta.all().keys).sorted()
         try editConfig { wire(profiles, in: &$0) }
-        let creds = paths.text(paths.credentialsFile)
+        let creds = try paths.text(paths.credentialsFile)
         if creds.contains("`zsp add") {
             try writeAtomically(creds.replacingOccurrences(of: "`zsp add", with: "`aws-cli-zsp add")
                 .replacingOccurrences(of: "`zsp list`", with: "`aws-cli-zsp list`"), to: paths.credentialsFile)
@@ -54,10 +67,15 @@ extension Vault {
     public func restorePlaintext() throws -> [String] {
         let profiles = try store.accounts(.master)
         guard !profiles.isEmpty else { return [] }
+        try requireNotEnforced(profiles, "writing it back to the file")
         try auth.confirm("write \(profiles.count) AWS key(s) back to \(paths.credentialsFile.lastPathComponent) in plain text")
-        var creds = INIDocument(paths.text(paths.credentialsFile))
+        var creds = INIDocument(try paths.text(paths.credentialsFile))
         for profile in profiles {
-            guard let data = try store.read(.master, profile) else { continue }
+            // Every key is read before anything is written or removed: one that cannot be read
+            // stops the lot, rather than being deleted with the rest.
+            guard let data = try store.read(.master, profile) else {
+                throw ZSPError.notFound("The key for “\(profile)” could not be read from the vault, so nothing was written back or removed")
+            }
             let key = try decodeKey(data, profile)
             creds.set("aws_access_key_id", key.accessKeyId, in: profile)
             creds.set("aws_secret_access_key", key.secretAccessKey, in: profile)

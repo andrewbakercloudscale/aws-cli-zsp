@@ -42,8 +42,17 @@ public final class Vault {
         do {
             try auth.confirm(reason)
             data = try store.read(.master, profile)
+        } catch let error as ZSPError {
+            // The enclave reports a declined or cancelled Touch ID as .auth; anything else is a
+            // vault that could not be read, which is not the person saying no.
+            if case .auth = error {
+                recordFailure(.authDenied, profile: profile, detail: ["for": reason], requester: requester, error: error)
+            } else {
+                Log.error("vault", "could not open the key for \(profile): \(error.localizedDescription)")
+            }
+            throw error
         } catch {
-            recordFailure(.authDenied, profile: profile, detail: ["for": reason], requester: requester, error: error)
+            Log.error("vault", "could not open the key for \(profile): \(error)")
             throw error
         }
         guard let data else { throw ZSPError.notFound("The key for “\(profile)” vanished from the vault") }
@@ -98,7 +107,7 @@ public final class Vault {
 
     /// Reads ~/.aws/config, lets `body` change it, and writes it back only if it changed.
     func editConfig(_ body: (inout INIDocument) -> Void) throws {
-        let text = paths.text(paths.configFile)
+        let text = try paths.text(paths.configFile)
         var config = INIDocument(text)
         body(&config)
         if config.text != text { try writeAtomically(config.text, to: paths.configFile) }

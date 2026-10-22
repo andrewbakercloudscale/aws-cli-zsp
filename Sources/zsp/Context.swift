@@ -29,7 +29,10 @@ func makeVault() -> Vault {
     let vault = Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
     vault.someoneAtMac = someoneAtMac
     // Pins live in the login Keychain, outside the vault folder. A sandbox has none.
-    if !inSandbox { vault.pins = KeychainStore() }
+    if !inSandbox {
+        vault.pins = KeychainStore()
+        store.keyPins = vault.pins
+    }
     return vault
 }
 

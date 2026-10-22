@@ -85,6 +85,12 @@ final class FakeAWS: AWSService {
         policies.append((userName, policyName, document))
     }
 
+    func getUserPolicy(_ c: AWSCredentials, userName: String, policyName: String) throws -> String? {
+        calls.append("GetUserPolicy \(userName) \(policyName)")
+        try check("iam:GetUserPolicy")
+        return policies.last { $0.user == userName && $0.name == policyName }?.document
+    }
+
     func listMFADevices(_ c: AWSCredentials) throws -> [String] {
         calls.append("ListMFADevices \(c.accessKeyId)")
         return mfaDevices

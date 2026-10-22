@@ -109,6 +109,11 @@ public struct Doctor {
     }
 
     func plaintext(_ s: Settings) -> Check {
+        let unreadable = Scanner.unreadable(paths)
+        guard unreadable.isEmpty else {
+            return Check(name: "No plaintext keys", ok: false,
+                         detail: "cannot read \(unreadable.joined(separator: ", ")) (not UTF-8 text, or no permission), so keys in it cannot be found or moved")
+        }
         let findings = Scanner.scan(paths)
         let exposed = findings.filter { !s.kept.contains($0.profile) }
         let detail = !exposed.isEmpty ? "in plain text: \(exposed.map(\.profile).joined(separator: ", "))"
@@ -136,6 +141,13 @@ public struct Doctor {
         var checks = [Check(name: "No keys in shell files", ok: hits.isEmpty,
                             detail: hits.isEmpty ? "no AWS_ACCESS_KEY_ID exported in ~/.zshrc and the like"
                                 : "exported in \(hits.joined(separator: ", ")): the AWS CLI uses it instead of the vault, and it is plain text. Delete the line and add the key with aws-cli-zsp add")]
+        if let home = probes.environment["ZSP_HOME"] {
+            // Meant for demos and tests: it moves the whole vault and turns account pinning off,
+            // so set in a real shell it would serve keys from a vault anything could have planted.
+            checks.append(Check(name: "Vault folder", ok: true,
+                                detail: "ZSP_HOME is set to \(home): aws-cli-zsp uses that vault, without account pins, instead of yours. Unset it unless this is a sandbox",
+                                warn: true))
+        }
         if probes.environment["AWS_ACCESS_KEY_ID"] != nil {
             checks.append(Check(name: "This shell", ok: true,
                                 detail: "AWS_ACCESS_KEY_ID is set here, so the AWS CLI ignores profiles in this shell (unset it, or check where it comes from)",
@@ -145,10 +157,16 @@ public struct Doctor {
     }
 
     func wiring(_ profiles: [ProfileMeta]) -> Check {
-        let config = INIDocument(paths.text(paths.configFile))
+        guard let text = try? paths.text(paths.configFile) else {
+            return Check(name: "AWS CLI wired to the vault", ok: false,
+                         detail: "cannot read \(paths.configFile.path) (not UTF-8 text, or no permission)")
+        }
+        let config = INIDocument(text)
+        // Exactly this binary, for exactly this profile: a line that merely mentions both (a
+        // wrapper in front, another profile's name) is not wired.
         let unwired = profiles.filter { p in
             let cp = config.value("credential_process", in: AWSFiles.configSection(for: p.profile)) ?? ""
-            return !cp.contains(probes.binary) || !cp.contains("credential-process")
+            return shellWords(cp) != [probes.binary, "credential-process", "--profile", p.profile]
         }.map(\.profile)
         return Check(name: "AWS CLI wired to the vault", ok: unwired.isEmpty,
                      detail: unwired.isEmpty ? "every profile's credential_process runs this aws-cli-zsp"

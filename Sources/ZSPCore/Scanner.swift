@@ -11,7 +11,7 @@ public struct Finding: Codable, Equatable, Sendable {
 }
 
 /// The key lines of one section of an AWS file.
-struct PlaintextKey {
+struct PlaintextKey: Equatable {
     var id: String
     var secret: String
     var token: String
@@ -38,10 +38,16 @@ extension INIDocument {
 public enum Scanner {
     public static func scan(_ paths: Paths) -> [Finding] {
         [(paths.configFile, true), (paths.credentialsFile, false)].flatMap { url, isConfig -> [Finding] in
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+            guard let text = try? paths.text(url) else { return [] }
             return INIDocument(text).plaintextKeys(isConfig: isConfig).map {
                 Finding(file: url.path, profile: $0.profile, accessKeyId: $0.key.id, complete: $0.key.complete)
             }
         }
+    }
+
+    /// The AWS files that exist but could not be read (not UTF-8, no permission): `scan` cannot
+    /// say they hold no keys.
+    public static func unreadable(_ paths: Paths) -> [String] {
+        [paths.configFile, paths.credentialsFile].filter { (try? paths.text($0)) == nil }.map(\.path)
     }
 }

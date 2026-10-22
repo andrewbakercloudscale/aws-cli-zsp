@@ -31,7 +31,17 @@ extension Vault {
 
     /// The sealed session, while it has five minutes left and is the one aws-cli-zsp issued.
     func cachedSession(_ profile: String, requester: String, at t: Date) throws -> AWSCredentials? {
-        guard let data = try store.read(.session, profile) else { return nil }
+        let data: Data?
+        do {
+            data = try store.read(.session, profile)
+        } catch {
+            // A damaged or unopenable session (a cut-short file, a new enclave key) costs one
+            // Touch ID for a new session rather than failing every command until it is cleared.
+            Log.warning("session", "the cached session for \(profile) cannot be opened (\(error.localizedDescription)); a new one is issued")
+            bestEffort("drop the unreadable session of \(profile)") { try store.delete(.session, profile) }
+            return nil
+        }
+        guard let data else { return nil }
         guard let s = try? ZSPJSON.decoder.decode(AWSCredentials.self, from: data) else {
             Log.warning("session", "the cached session for \(profile) does not decode; a new one is issued")
             return nil
@@ -54,12 +64,12 @@ extension Vault {
 
     /// GetSessionToken, then the session is sealed, logged and remembered.
     func issue(_ profile: String, _ master: MasterKey, seconds: Int, mfa: MFACode?, approvedBy: String,
-               requester: String) throws -> AWSCredentials {
+               requester: String, failure: (event: AuditEvent, detail: [String: String]) = (.sessionFailed, [:])) throws -> AWSCredentials {
         let session: AWSCredentials
         do {
             session = try aws.getSessionToken(master.credentials, durationSeconds: seconds, mfa: mfa)
         } catch {
-            recordFailure(.sessionFailed, profile: profile, requester: requester, error: error)
+            recordFailure(failure.event, profile: profile, detail: failure.detail, requester: requester, error: error)
             throw error
         }
         try checkPin(profile, session, requester: requester)
@@ -99,13 +109,12 @@ extension Vault {
         let key = try decodeKey(data, profile)
         try paths.ensureSupportDir()
         return try withFileLock(paths.lock("session-\(profile)")) {
-            do {
-                return try issue(profile, key, seconds: Settings.load(paths).duration(for: profile),
-                                 mfa: MFACode(serial: serial, code: code), approvedBy: "mfa-code", requester: requester)
-            } catch {
-                recordFailure(.authDenied, profile: profile, detail: ["for": "approval by MFA code"], requester: requester, error: error)
-                throw error
-            }
+            // A wrong code is AWS refusing GetSessionToken: audited once, as a refusal.
+            let session = try issue(profile, key, seconds: Settings.load(paths).duration(for: profile),
+                                    mfa: MFACode(serial: serial, code: code), approvedBy: "mfa-code", requester: requester,
+                                    failure: (.authDenied, ["for": "approval by MFA code"]))
+            try confirmStillEnforced(profile, session, requester: requester)
+            return session
         }
     }
 

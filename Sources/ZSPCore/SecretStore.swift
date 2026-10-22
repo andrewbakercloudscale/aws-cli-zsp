@@ -14,6 +14,8 @@ public enum SecretKind: String, CaseIterable, Sendable {
     case remote
     /// The AWS account and user a profile is pinned to. Only ever in the login Keychain.
     case pin
+    /// A hash of the public key long-lived keys are sealed to. Only ever in the login Keychain.
+    case sealingKey = "sealing-key"
 }
 
 public protocol SecretStore: AnyObject {

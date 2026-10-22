@@ -70,8 +70,12 @@ func cmdDoctor() {
     let checks = doctorChecks()
     let failed = checks.filter { !$0.ok }
     if !failed.isEmpty { Log.info("doctor", "checks not passing: \(failed.map(\.name).joined(separator: ", "))") }
-    done(checks, checks.map { "\($0.symbol) \($0.name): \($0.detail)" }.joined(separator: "\n")
-         + "\n\(failed.isEmpty ? "all checks pass" : "\(failed.count) check(s) failed")")
+    let text = checks.map { "\($0.symbol) \($0.name): \($0.detail)" }.joined(separator: "\n")
+        + "\n\(failed.isEmpty ? "all checks pass" : "\(failed.count) check(s) failed")"
+    // A script or CI job running doctor sees a failed check in the exit status, and in "ok".
+    if opts.json { printJSON(Envelope(ok: failed.isEmpty, result: checks, error: failed.isEmpty ? nil : "\(failed.count) check(s) failed")) }
+    else { print(text) }
+    exit(failed.isEmpty ? 0 : 1)
 }
 
 /// A redacted report for support: checks, settings, profiles, the support log and the audit

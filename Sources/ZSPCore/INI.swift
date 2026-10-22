@@ -178,3 +178,30 @@ public func shellQuote(_ s: String) -> String {
     if !s.isEmpty, s.unicodeScalars.allSatisfy({ safe.contains($0) }) { return s }
     return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
+
+/// The words a shell-style split makes of `s`: the inverse of `shellQuote`, with double quotes
+/// and backslashes as in Python's shlex, which the AWS CLI uses. Nil when a quote is left open.
+public func shellWords(_ s: String) -> [String]? {
+    var words: [String] = []
+    var word = ""
+    var inWord = false
+    var quote: Character?
+    var escaped = false
+    for c in s {
+        if escaped { word.append(c); escaped = false; continue }
+        switch quote {
+        case "'":
+            if c == "'" { quote = nil } else { word.append(c) }
+        case "\"":
+            if c == "\"" { quote = nil } else if c == "\\" { escaped = true } else { word.append(c) }
+        default:
+            if c == "'" || c == "\"" { quote = c; inWord = true }
+            else if c == "\\" { escaped = true; inWord = true }
+            else if c.isWhitespace { if inWord { words.append(word); word = ""; inWord = false } }
+            else { word.append(c); inWord = true }
+        }
+    }
+    guard quote == nil, !escaped else { return nil }
+    if inWord { words.append(word) }
+    return words
+}
