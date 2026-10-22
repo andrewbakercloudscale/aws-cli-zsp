@@ -36,6 +36,64 @@ final class AuditTests: XCTestCase {
         XCTAssertNil(AuditLog(paths: s.paths, anchor: nil).verify().anchored, "a reader without the Keychain cannot check the anchor")
     }
 
+    func testDeletingTheLogOrItsFirstLinesIsCaught() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let log = AuditLog(paths: s.paths, anchor: s.store)
+        for i in 1...5 { try log.append("e\(i)") }
+        let text = try String(contentsOf: s.paths.auditFile, encoding: .utf8)
+
+        // The first two lines cut: what is left still links up on its own.
+        try (text.split(separator: "\n").dropFirst(2).joined(separator: "\n") + "\n").write(to: s.paths.auditFile, atomically: true, encoding: .utf8)
+        XCTAssertEqual(log.verify().problem, "entries 1–2 were cut from the start of the log")
+
+        // The whole file deleted, and the next entry written as if nothing happened.
+        try FileManager.default.removeItem(at: s.paths.auditFile)
+        XCTAssertFalse(log.verify().intact)
+        try log.append("e6")
+        XCTAssertFalse(log.verify().intact, "a new file after a deletion is not a rotation")
+
+        // Deleting the head file as well does not restart the chain at 1: the sealed copy says where it was.
+        try FileManager.default.removeItem(at: s.paths.auditFile)
+        try FileManager.default.removeItem(at: s.paths.auditHeadFile)
+        XCTAssertEqual(try log.append("e7").seq, 7)
+    }
+
+    func testMissingAnchorIsNotIntact() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let log = AuditLog(paths: s.paths, anchor: s.store)
+        try log.append("a")
+        try s.store.delete(.auditHead, "head")
+        let v = log.verify()
+        XCTAssertFalse(v.intact)
+        XCTAssertNil(v.anchored)
+    }
+
+    func testRotationStartsANewSegmentAndKeepsTwentyArchives() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let log = AuditLog(paths: s.paths, anchor: s.store)
+        log.rotateBytes = 1
+        try log.append("first")
+        for n in 0..<22 {
+            // Archive names carry the time to the second: give each its own.
+            try "".write(to: s.paths.supportDir.appendingPathComponent("audit-2026010\(n / 10)T0000\(n % 10)0Z.jsonl"), atomically: true, encoding: .utf8)
+        }
+        try log.append("second")
+        try log.append("third")
+        let v = log.verify()
+        XCTAssertTrue(v.intact, v.problem ?? "")
+        XCTAssertEqual(v.entries, 1, "only the newest segment is in the current file")
+        XCTAssertEqual(log.entries().first?.seq, 3)
+        XCTAssertEqual(log.archives().count, AuditLog.keepArchives)
+    }
+
+    func testEntriesReadsOnlyTheTail() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let log = AuditLog(paths: s.paths, anchor: s.store)
+        for i in 1...40 { try log.append("e\(i)", detail: ["pad": String(repeating: "x", count: 20_000)]) }
+        XCTAssertEqual(log.entries(limit: 3).map(\.seq), [38, 39, 40])
+        XCTAssertEqual(log.entries().count, 40)
+    }
+
     func testShortCommandForDialogs() {
         XCTAssertEqual(Requester.shortCommand(["/opt/homebrew/bin/aws", "sts", "get-caller-identity", "--profile", "default"]),
                        "aws sts get-caller-identity")

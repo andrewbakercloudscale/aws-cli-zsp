@@ -20,9 +20,13 @@ enum CLI {
         var err: String
     }
 
+    /// Long enough for an unanswered Touch ID prompt and a rotation's retries; past it the CLI
+    /// is stopped, so a command stuck behind another one's lock does not lock the panel for good.
+    static let timeout: TimeInterval = 180
+
     /// Runs the CLI and waits. Both pipes are read at once: reading stdout to the end first
     /// would hang for good once the CLI filled the stderr pipe (64 KB) and blocked on it.
-    static func exec(_ path: String, _ args: [String]) -> Result {
+    static func exec(_ path: String, _ args: [String], timeout: TimeInterval = CLI.timeout) -> Result {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
@@ -34,8 +38,14 @@ enum CLI {
             Log.error("menu", "cannot run \(path): \(error.localizedDescription)")
             return Result(status: 127, out: Data(), err: "cannot run aws-cli-zsp: \(error.localizedDescription)")
         }
-        final class Box: @unchecked Sendable { var data = Data() }
+        final class Box: @unchecked Sendable { var data = Data(); var timedOut = false }
         let stderr = Box()
+        let watchdog = DispatchWorkItem {
+            guard p.isRunning else { return }
+            stderr.timedOut = true
+            p.terminate()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
         let group = DispatchGroup()
         group.enter()
         DispatchQueue.global().async {
@@ -45,6 +55,13 @@ enum CLI {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         group.wait()
         p.waitUntilExit()
+        watchdog.cancel()
+        if stderr.timedOut {
+            let what = args.first ?? "aws-cli-zsp"
+            Log.error("menu", "\(what) did not finish in \(Int(timeout)) s and was stopped")
+            return Result(status: 124, out: Data(), err: "aws-cli-zsp \(what) did not finish within \(Int(timeout / 60)) minutes and was stopped. "
+                + "It may have been waiting for a Touch ID prompt nobody answered, or for another aws-cli-zsp command on the same profile. Try again.")
+        }
         let r = Result(status: p.terminationStatus, out: data, err: String(decoding: stderr.data, as: UTF8.self))
         // The CLI logs its own failures; this is for a crash or a CLI that did not answer in JSON.
         if r.status != 0 && r.out.isEmpty { Log.warning("menu", "\(args.first ?? "aws-cli-zsp") exited \(r.status): \(r.err.prefix(300))") }

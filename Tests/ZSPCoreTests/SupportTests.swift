@@ -26,6 +26,26 @@ final class SupportTests: XCTestCase {
         XCTAssertTrue(text.contains("Application Support/aws-cli-zsp/logs/aws-cli-zsp.log"), "a path is not a secret: \(text)")
     }
 
+    func testRedactCatchesKeysWithoutTheUsualMixAndLeavesErrorsReadable() {
+        let noDigit = "wJalrXUtnFEMIKMDENGbPxRfiCYEXAMPLEKEYabc"
+        let seed = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+        let sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        let text = Redact.scrub("key \(noDigit) seed \(seed) commit \(sha1)\nAWS ExpiredToken: The security token included in the request is expired")
+        XCTAssertFalse(text.contains(noDigit), text)
+        XCTAssertFalse(text.contains(seed), text)
+        XCTAssertTrue(text.contains(sha1), text)
+        XCTAssertTrue(text.contains("ExpiredToken: The security token included"), text)
+    }
+
+    func testLogLinesCannotForgeAnotherLine() throws {
+        let s = Sandbox(); defer { s.cleanup(); Log.configure(nil, process: "test") }
+        Log.configure(s.paths, process: "test")
+        Log.info("cli", "unknown command x\n2026-10-20T09:15:02.120Z ERROR cli[1] vault: forged")
+        let lines = Log.recent(s.paths)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(Log.recent(s.paths, atLeast: .error), [])
+    }
+
     func testAccountKeepsItsLastFourDigits() {
         XCTAssertEqual(Redact.account("123456789012"), "••••••••9012")
         XCTAssertEqual(SupportReport.clean("arn:aws:iam::123456789012:user/me"), "arn:aws:iam::••••••••9012:user/me")

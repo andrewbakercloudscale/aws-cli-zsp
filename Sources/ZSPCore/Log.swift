@@ -80,7 +80,9 @@ public enum Log {
         }
         sink.lock.withLock {
             guard let file = sink.file else { return }
-            let line = LogLine(date: Date(), level: level, process: "\(sink.process)[\(getpid())]", category: category, message: message)
+            // One entry, one line: a newline from a profile name or an argument cannot forge another.
+            let flat = message.replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\n", with: "\\n")
+            let line = LogLine(date: Date(), level: level, process: "\(sink.process)[\(getpid())]", category: category, message: flat)
             append(line.text + "\n", to: file)
         }
     }
@@ -89,16 +91,25 @@ public enum Log {
     static func append(_ text: String, to file: URL) {
         let fm = FileManager.default
         try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        if let size = (try? fm.attributesOfItem(atPath: file.path))?[.size] as? Int, size > maxBytes {
-            let old = file.deletingPathExtension().appendingPathExtension("1.log")
-            try? fm.removeItem(at: old)
-            try? fm.moveItem(at: file, to: old)
+        if isFull(file) {
+            // The CLI, the watcher and the app share the file: rotate under a lock between
+            // processes, and only if another process has not just done it.
+            _ = try? withFileLock(file.deletingLastPathComponent().appendingPathComponent(".rotate.lock")) {
+                guard isFull(file) else { return }
+                let old = file.deletingPathExtension().appendingPathExtension("1.log")
+                try? fm.removeItem(at: old)
+                try? fm.moveItem(at: file, to: old)
+            }
         }
         let fd = open(file.path, O_CREAT | O_WRONLY | O_APPEND, 0o600)
         guard fd >= 0 else { return }
         defer { close(fd) }
         let data = Data(text.utf8)
         _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+    }
+
+    static func isFull(_ file: URL) -> Bool {
+        ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int ?? 0) > maxBytes
     }
 
     /// The newest `limit` lines at `level` or above, oldest first, from the current file and the
