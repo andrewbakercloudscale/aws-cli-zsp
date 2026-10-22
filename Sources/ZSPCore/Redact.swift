@@ -7,10 +7,13 @@ public enum Redact {
     static let keyId = try! NSRegularExpression(pattern: "\\b(AKIA|ASIA|AIDA|AROA)[A-Z0-9]{12,}\\b")
     /// Secret keys (40 characters) and session tokens (hundreds): long runs of base64.
     static let blob = try! NSRegularExpression(pattern: "(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=_-])")
+    /// MFA seeds: base32, upper case and digits 2–7, 32 characters or more.
+    static let base32 = try! NSRegularExpression(pattern: "(?<![A-Za-z0-9])[A-Z2-7]{32,}={0,6}(?![A-Za-z0-9])")
     /// `secret=…` in an otpauth:// URI, `aws_secret_access_key = …` in a file, a seed or code
-    /// after its name.
+    /// after its name. The name must start a word: AWS's "ExpiredToken: The security token…"
+    /// is an error code, not a token.
     static let named = try! NSRegularExpression(
-        pattern: "(?i)(secret|seed|token|password|aws_secret_access_key|aws_session_token|SecretAccessKey|SessionToken)(\"?\\s*[=:]\\s*\"?)[^\\s\"&,;]+")
+        pattern: "(?i)(?<![A-Za-z])(secret|seed|token|password|aws_secret_access_key|aws_session_token|SecretAccessKey|SessionToken)(\"?\\s*[=:]\\s*\"?)[^\\s\"&,;]+")
 
     public static func scrub(_ text: String) -> String {
         var out = replace(named, in: text) { m, s in
@@ -19,11 +22,14 @@ public enum Redact {
         out = replace(keyId, in: out) { m, s in maskKeyId(s.substring(with: m.range)) }
         out = replace(blob, in: out) { m, s in
             let run = s.substring(with: m.range)
-            // A long path or word is not a secret: a secret mixes cases and digits.
+            // A secret key is exactly 40 characters, and one in a few hundred has no digit or no
+            // capital, so that length always goes, except lower-case hex (a SHA-1, a commit).
+            if run.count == 40 { return run.allSatisfy(\.isHexDigit) && run == run.lowercased() ? run : "[redacted]" }
+            // Any other long path or word is not a secret: a token mixes cases and digits.
             let mixed = run.contains(where: \.isUppercase) && run.contains(where: \.isLowercase) && run.contains(where: \.isNumber)
             return mixed ? "[redacted]" : run
         }
-        return out
+        return replace(base32, in: out) { _, _ in "[redacted]" }
     }
 
     static func replace(_ re: NSRegularExpression, in text: String, _ with: (NSTextCheckingResult, NSString) -> String) -> String {

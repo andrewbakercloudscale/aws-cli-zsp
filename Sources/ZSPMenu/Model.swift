@@ -42,6 +42,10 @@ final class Model: ObservableObject {
     /// When the support log last changed, so it is re-read only then.
     var logModified: Date?
     private var lastSeq = 0
+    /// A refresh reading files off the main thread, so the timer does not stack them up.
+    private var refreshing = false
+    /// The verify waiting for a burst of new audit entries (a script's loop) to settle.
+    private var pendingVerify: Task<Void, Never>?
     private let canNotify = Bundle.main.bundleIdentifier != nil
 
     var statusSymbol: String {
@@ -60,12 +64,43 @@ final class Model: ObservableObject {
         verify()
     }
 
+    /// What refresh reads, gathered off the main thread: the audit file can be megabytes.
+    struct Snapshot: Sendable {
+        var profiles: [ProfileMeta]
+        var findings: [Finding]
+        var settings: ZSPCore.Settings
+        var entries: [AuditEntry]
+    }
+
+    nonisolated static func snapshot(_ paths: Paths) -> Snapshot {
+        Snapshot(profiles: Vault.statuses(meta: MetadataStore(paths: paths).all(), keychain: nil),
+                 findings: Scanner.scan(paths), settings: Settings.load(paths),
+                 entries: AuditLog(paths: paths, anchor: nil).entries(limit: 300))
+    }
+
     func refresh(initial: Bool = false) {
-        profiles = Vault.statuses(meta: MetadataStore(paths: paths).all(), keychain: nil)
-        findings = Scanner.scan(paths)
-        settings = Settings.load(paths)
+        if initial {
+            apply(Self.snapshot(paths), initial: true)
+            return
+        }
+        guard !refreshing else { return }
+        refreshing = true
+        let paths = paths
+        Task.detached {
+            let snap = Self.snapshot(paths)
+            await MainActor.run {
+                self.refreshing = false
+                self.apply(snap, initial: false)
+            }
+        }
+    }
+
+    func apply(_ snap: Snapshot, initial: Bool) {
+        profiles = snap.profiles
+        findings = snap.findings
+        settings = snap.settings
         if initial && needsSetup { page = .setup }
-        let entries = AuditLog(paths: paths, anchor: nil).entries(limit: 300)
+        let entries = snap.entries
         if !initial {
             for e in entries where e.seq > lastSeq {
                 if e.kind == .keyImported { notify("Moved an AWS key into the vault", "Profile “\(e.profile ?? "?")” no longer has a plaintext key in \(e.detail["from"] ?? "~/.aws").") }
@@ -74,10 +109,21 @@ final class Model: ObservableObject {
         }
         if let last = entries.last?.seq, last != lastSeq {
             lastSeq = last
-            if !initial { verify() }
+            if !initial { verifySoon() }
         }
         audit = entries.reversed()
         loadProblems()
+    }
+
+    /// Verifies once new entries stop arriving for a few seconds: each verify re-hashes the
+    /// whole log, and a script can add an entry per command.
+    func verifySoon() {
+        pendingVerify?.cancel()
+        pendingVerify = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.verify()
+        }
     }
 
     var visibleAudit: [AuditEntry] {
@@ -136,7 +182,7 @@ final class Model: ObservableObject {
                 if let v = env?.result {
                     let checked = Date().formatted(date: .omitted, time: .standard)
                     self.banner = v.intact
-                        ? Banner(text: "Audit chain verified at \(checked): all \(v.entries) entries hash-link, and the newest matches the copy sealed in the vault\(v.anchored == false ? " (no sealed copy yet)" : "").", isError: false)
+                        ? Banner(text: "Audit chain verified at \(checked): all \(v.entries) entries hash-link, and the newest matches the copy sealed in the vault\(v.anchored == nil ? " (no sealed copy to compare)" : "").", isError: false)
                         : Banner(text: "Audit chain broken: \(v.problem ?? "an entry was changed or removed").", isError: true)
                 } else {
                     self.banner = Banner(text: env?.error ?? "aws-cli-zsp audit --verify did not run", isError: true)
