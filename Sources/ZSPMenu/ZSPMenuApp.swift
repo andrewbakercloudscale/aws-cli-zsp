@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if args.contains("--mfa") { model.tab = .protection }
             if args.contains("--setup") { model.page = .setup }
             if args.contains("--about") { model.page = .about }
+            if let g = args.firstIndex(of: "--guide"), g + 1 < args.count { model.page = .phoneGuide(args[g + 1]) }
             if args.contains("--checks") { model.runChecks() }
             // An offscreen window rather than ImageRenderer, which draws AppKit-backed controls
             // (pickers, menus, scroll views) as placeholders.

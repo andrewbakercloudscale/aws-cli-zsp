@@ -13,6 +13,7 @@ struct ContentView: View {
             switch model.page {
             case .setup: SetupView()
             case .about: AboutView()
+            case let .phoneGuide(profile): PhoneGuideView(selected: profile)
             case .main:
                 TabBar(selection: $model.tab, badges: [.overview: model.exposed.count])
                 ScrollView {

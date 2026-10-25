@@ -4,7 +4,11 @@ import SwiftUI
 import UserNotifications
 import ZSPCore
 
-enum Page: Equatable { case main, setup, about }
+enum Page: Equatable {
+    case main, setup, about
+    /// The step-by-step guide to phone approval, for one key.
+    case phoneGuide(String)
+}
 
 struct Banner: Equatable {
     var text: String

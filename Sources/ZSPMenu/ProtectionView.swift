@@ -10,6 +10,10 @@ struct ProtectionView: View {
             Card(title: "Make AWS itself demand MFA", symbol: "lock.iphone", tint: Theme.violet) {
                 Text("Touch ID protects the key on this Mac, but AWS doesn't know about it. Three steps per key: this Mac becomes an MFA device (still one Touch ID), AWS refuses the key without MFA, and a code from your phone approves a session when you are away from the Mac, for example while driving Claude Code with Remote Control.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let first = model.profiles.first(where: { !$0.temporary && $0.remoteSerial == nil && !($0.cannot(.mfa) && $0.mfaSerial == nil) }) {
+                    Button { model.page = .phoneGuide(first.profile) } label: { Label("Guide me through it…", systemImage: "map") }
+                        .buttonStyle(.pill(Theme.violet, filled: true))
+                }
             }
             ForEach(model.profiles.filter { !$0.temporary }) { p in
                 if p.cannot(.mfa) && p.mfaSerial == nil { ReadOnlyMFACard(profile: p) } else { MFACard(profile: p) }

@@ -168,6 +168,10 @@ struct PhoneSetupRow: View {
             Text(profile.profile).font(.callout.weight(.semibold))
             Text("\(stepsDone) of 3").font(.caption).foregroundStyle(.secondary)
             Spacer()
+            if next != nil {
+                Button("Guide…") { model.page = .phoneGuide(profile.profile) }.buttonStyle(.link).font(.caption)
+                    .help("Step by step: what each step does and what it needs")
+            }
             switch next {
             case nil:
                 Label("Phone approval on", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(Theme.safe)
