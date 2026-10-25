@@ -24,6 +24,7 @@ struct SetupView: View {
                 intro
                 analysis
                 options
+                if !phoneKeys.isEmpty { phone }
                 HStack {
                     Spacer()
                     Button {
@@ -128,9 +129,58 @@ struct SetupView: View {
                 }
                 .labelsHidden().frame(width: 130)
             }
-            Divider()
-            Label("MFA enforced by AWS and approval from your phone come later, per key, on the MFA & phone tab.", systemImage: "lock.iphone")
-                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The vault's long-lived keys whose IAM user may have MFA: the ones phone approval can cover.
+    var phoneKeys: [ProfileMeta] { model.profiles.filter { !$0.temporary && !($0.cannot(.mfa) && $0.mfaSerial == nil) } }
+
+    var phone: some View {
+        let done = phoneKeys.filter { $0.remoteSerial != nil }.count
+        return Card(title: "3. Phone approval, per key", symbol: "iphone.radiowaves.left.and.right", tint: Theme.violet,
+                    trailing: AnyView(Text("\(done) of \(phoneKeys.count) on").font(.callout.weight(.semibold)).foregroundStyle(.secondary))) {
+            Text("Lets a 6-digit code from your phone approve a session when nobody is at the Mac (aws-cli-zsp remote enable). Each key gets there in three steps: MFA on this Mac, AWS requires MFA, then your phone. The button shows the next one; each asks for Touch ID.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(phoneKeys) { PhoneSetupRow(profile: $0) }
+            Text("Each step can be undone on the MFA & phone tab.").font(.caption).foregroundStyle(.secondary)
+        }
+        .disabled(model.busy != nil)
+    }
+}
+
+/// One key's way to phone approval: where it is, and the next step as a button.
+struct PhoneSetupRow: View {
+    @EnvironmentObject var model: Model
+    let profile: ProfileMeta
+
+    /// The next of the three steps, nil once phone approval is on.
+    var next: Action? {
+        if profile.mfaSerial == nil { return .mfaSetup }
+        if profile.mfaEnforced != true { return .mfaEnforce }
+        return profile.remoteSerial == nil ? .remoteEnable : nil
+    }
+
+    var stepsDone: Int { [profile.mfaSerial != nil, profile.mfaEnforced == true, profile.remoteSerial != nil].filter { $0 }.count }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SymbolTile(symbol: "key.fill", color: next == nil ? Theme.safe : Theme.violet, size: 26)
+            Text(profile.profile).font(.callout.weight(.semibold))
+            Text("\(stepsDone) of 3").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            switch next {
+            case nil:
+                Label("Phone approval on", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(Theme.safe)
+            case .remoteEnable:
+                Button("Phone already in IAM…") { model.perform(.remoteEnable, on: profile.profile) }.buttonStyle(.link).font(.caption)
+                Button { model.addPhone(profile.profile) } label: { Text("Add phone…") }
+                    .buttonStyle(.pill(Theme.violet, filled: true))
+                    .help("Shows a QR code for Google Authenticator or any authenticator app")
+            case let step?:
+                Button { model.perform(step, on: profile.profile) } label: { Text(step.title) }
+                    .buttonStyle(.pill(Theme.violet, filled: true))
+                    .help(step.explain(profile.profile) ?? "")
+            }
         }
     }
 }

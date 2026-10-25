@@ -236,8 +236,9 @@ seed, and `remote enable` refuses to make it until `mfa enforce` has run. So a p
 reads it gets a key AWS refuses without a code from your phone, which it does not have. The
 code AWS sees once and rejects on reuse; it is in your chat for 30 seconds of usefulness.
 
-The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`
-and `iam:PutUserPolicy` on itself for these commands, and `iam:DeleteUserPolicy`,
+The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`,
+`iam:PutUserPolicy` and `iam:GetUserPolicy` (phone approval checks the require-MFA policy is
+still attached) on itself for these commands, and `iam:DeleteUserPolicy`,
 `iam:DeactivateMFADevice` and `iam:DeleteVirtualMFADevice` to undo them.
 
 ## Commands
