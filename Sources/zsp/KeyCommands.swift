@@ -128,6 +128,15 @@ func cmdExec() throws {
 }
 
 func cmdDuration() throws {
+    // `--profile P default`: the key goes back to the default length.
+    if let p = opts.profile, opts.rest.first == "default" {
+        var s = Settings.load(paths)
+        s.profileSessionSeconds[p] = nil
+        try s.save(paths)
+        try makeVault().audit.append(.settingsDuration, profile: p, detail: ["seconds": String(s.sessionSeconds), "default": "true"])
+        done(s, "sessions for \(p) now last the default \(s.sessionSeconds / 60) minutes (from the next one issued)")
+        return
+    }
     guard let raw = opts.rest.first, let seconds = parseDuration(raw) else {
         let s = Settings.load(paths)
         done(s, "default \(s.sessionSeconds)s" + s.profileSessionSeconds.map { "\n\($0.key) \($0.value)s" }.sorted().joined())

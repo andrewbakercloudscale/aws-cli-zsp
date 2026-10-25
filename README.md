@@ -257,7 +257,7 @@ aws-cli-zsp inspect --profile P               ARN, and when AWS last saw each ke
 aws-cli-zsp rotate --profile P [--keep-old]   new key, verified, then the old one deleted (or deactivated)
 aws-cli-zsp revoke-sessions --profile P       deny every session issued before now
 aws-cli-zsp clear-sessions [--profile P]      drop cached sessions here (the next command needs Touch ID)
-aws-cli-zsp duration --profile P 8h           session length, 15m to 12h (default 1h)
+aws-cli-zsp duration --profile P 8h           session length, 15m to 12h (default 1h); `default` undoes it
 aws-cli-zsp exec --profile P -- terraform plan
 aws-cli-zsp disable-key | delete-key | forget --profile P
 aws-cli-zsp mfa setup | enforce --profile P

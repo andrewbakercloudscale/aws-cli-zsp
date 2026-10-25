@@ -117,7 +117,11 @@ struct SetupView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Session length").font(.callout.weight(.semibold))
-                    Text("How long one Touch ID lasts before the next command asks again.").font(.caption).foregroundStyle(.secondary)
+                    Text("How long one Touch ID lasts before the next command asks again. A key can have its own, on the Keys tab.").font(.caption).foregroundStyle(.secondary)
+                    let own = model.settings.profileSessionSeconds.keys.sorted()
+                    if !own.isEmpty {
+                        Text("Own length, not changed here: \(own.joined(separator: ", ")).").font(.caption).foregroundStyle(Theme.warn)
+                    }
                 }
                 Spacer()
                 Picker("", selection: $seconds) {

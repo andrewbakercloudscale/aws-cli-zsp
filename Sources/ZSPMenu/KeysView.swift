@@ -97,6 +97,7 @@ struct KeyCard: View {
                         .disabled(profile.temporary)
                 }
                 Spacer()
+                SessionLengthMenu(profile: profile.profile)
                 Menu {
                     ForEach(menu, id: \.self) { a in
                         if [.disable, .forget].contains(a) || (a == .markReadOnly || a == .markAuto) { Divider() }
@@ -125,6 +126,39 @@ struct KeyCard: View {
     var usedLine: String {
         guard let used = profile.lastUsedAt else { return "Not used since it was moved here" }
         return "Used \(used.formatted(.relative(presentation: .named)))" + (profile.lastRequester.map { " by \($0)" } ?? "")
+    }
+}
+
+/// The lengths offered in the app; the CLI takes any length from 15m to 12h.
+let sessionLengths = [900, 1800, 3600, 7200, 14_400, 28_800, 43_200]
+
+/// 3600 is "1 hour", 5400 is "90 min".
+func sessionLengthText(_ seconds: Int) -> String {
+    if seconds % 3600 == 0 { return seconds == 3600 ? "1 hour" : "\(seconds / 3600) hours" }
+    return "\(seconds / 60) min"
+}
+
+/// A key's session length, with the choice to follow the default again.
+struct SessionLengthMenu: View {
+    @EnvironmentObject var model: Model
+    let profile: String
+
+    var body: some View {
+        let own = model.settings.profileSessionSeconds[profile]
+        Menu {
+            ForEach(sessionLengths, id: \.self) { s in
+                Button { model.setDuration(profile, seconds: s) } label: {
+                    if own == s { Label(sessionLengthText(s), systemImage: "checkmark") } else { Text(sessionLengthText(s)) }
+                }
+            }
+            Divider()
+            Button { model.setDuration(profile, seconds: nil) } label: {
+                let text = "Default (\(sessionLengthText(model.settings.sessionSeconds)))"
+                if own == nil { Label(text, systemImage: "checkmark") } else { Text(text) }
+            }
+        } label: { Label(sessionLengthText(model.settings.duration(for: profile)), systemImage: "timer") }
+            .menuStyle(.borderlessButton).fixedSize()
+            .help("How long one Touch ID lasts for this key. Applies from the next session.")
     }
 }
 

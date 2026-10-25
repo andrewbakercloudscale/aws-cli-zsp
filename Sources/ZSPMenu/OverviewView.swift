@@ -77,9 +77,12 @@ struct Hero: View {
         .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(exposed ? Theme.exposedGradient : Theme.protectedGradient))
     }
 
+    /// What keys actually get: a key's own length overrides the default.
     var durationText: String {
-        let m = model.settings.sessionSeconds / 60
-        return m % 60 == 0 ? "\(m / 60)h sessions" : "\(m)m sessions"
+        let lengths = Set(model.profiles.map { model.settings.duration(for: $0.profile) })
+        let short = { (s: Int) in s % 3600 == 0 ? "\(s / 3600)h" : "\(s / 60)m" }
+        guard let lo = lengths.min(), let hi = lengths.max() else { return "\(short(model.settings.sessionSeconds)) sessions" }
+        return lo == hi ? "\(short(lo)) sessions" : "\(short(lo))–\(short(hi)) sessions"
     }
 }
 

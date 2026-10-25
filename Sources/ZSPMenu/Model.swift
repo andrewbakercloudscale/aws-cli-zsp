@@ -223,6 +223,14 @@ final class Model: ObservableObject {
         }
     }
 
+    /// One key's session length; nil puts it back on the default.
+    func setDuration(_ profile: String, seconds: Int?) {
+        let value = seconds.map { "\($0)s" } ?? "default"
+        call(["duration", "--profile", profile, value], label: "Changing \(profile)'s session length…", as: CLI.Ignored.self) { _ in
+            "Sessions for \(profile) now last \(sessionLengthText(seconds ?? self.settings.sessionSeconds)), from the next Touch ID."
+        }
+    }
+
     /// The setup screen's choices, in one `aws-cli-zsp setup` call.
     func finishSetup(move: [String], keep: [String], autoMove: Bool, seconds: Int) {
         var args = ["setup", "--auto", autoMove ? "on" : "off", "--duration", "\(seconds)s"]

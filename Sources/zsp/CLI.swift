@@ -17,7 +17,7 @@ Keys
 Using them
   aws-cli-zsp credential-process --profile P   what ~/.aws/config calls; prints a short-lived session
   aws-cli-zsp exec --profile P -- CMD...       run CMD with a session in its environment
-  aws-cli-zsp duration [--profile P] 1h        session length (15m to 12h, default 1h)
+  aws-cli-zsp duration [--profile P] 1h        session length (15m to 12h, default 1h; `default` undoes a key's own)
 
 MFA, and approval when nobody is at the Mac (Claude Code Remote Control)
   aws-cli-zsp mfa setup --profile P            make this Mac an MFA device: every session carries MFA, still one Touch ID
