@@ -32,8 +32,9 @@ func cmdMFA() throws {
     case "add-phone":
         let stamp = String(Int(Date().timeIntervalSince1970))
         let d = try vault.addPhone(profile, deviceName: deviceName("aws-cli-zsp-phone-\(profile)-\(stamp)"))
+        let qr = QRText.render(d.uri).map { "\n\($0)\n" } ?? ""
         done(d, """
-            scan this in your authenticator app (or type the secret in by hand):
+            scan this in your authenticator app (or type the secret in by hand):\(qr)
               \(d.uri)
               secret: \(d.seed)
             then: aws-cli-zsp mfa confirm-phone --profile \(profile) --serial \(d.serial) CODE1 CODE2

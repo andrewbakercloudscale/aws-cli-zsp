@@ -9,7 +9,7 @@ let package = Package(
         // the audit log. No UI.
         .target(
             name: "ZSPCore",
-            linkerSettings: [.linkedFramework("Security"), .linkedFramework("LocalAuthentication")]
+            linkerSettings: [.linkedFramework("Security"), .linkedFramework("LocalAuthentication"), .linkedFramework("CoreImage")]
         ),
         // The only binary that reads secrets. The AWS CLI calls it as credential_process.
         .executableTarget(name: "zsp", dependencies: ["ZSPCore"]),
