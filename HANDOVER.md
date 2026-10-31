@@ -1,6 +1,6 @@
 # Handover: aws-cli-zsp
 
-Updated 2026-10-20. Version 0.3.3 is on `main` (`dcb247a`) and has no tag. v0.3.2 is the latest release.
+Updated 2026-10-31. Version 0.3.4 is on `main` and has no tag. v0.3.2 is the latest release.
 
 ## State
 
