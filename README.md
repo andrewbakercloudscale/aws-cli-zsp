@@ -209,8 +209,9 @@ aws-cli-zsp mfa confirm-phone --profile bedrock --serial ARN 123456 654321   # t
 aws-cli-zsp approve --profile bedrock 123456   # what Claude Code runs after asking you for the code
 ```
 
-In the UI, **Add phone…** on step 3 does the first two: it creates the device in AWS, shows
-its QR code, and asks for two codes.
+In the UI, **Add Google Authenticator…** on a key's card (or **Add phone…** on step 3) does the
+first two: it creates the device in AWS, shows its QR code, and asks for two codes. Any
+authenticator app works. A key that AWS does not yet require MFA on goes to the guide first.
 
 <img src="docs/images/add-phone.png" width="380" alt="Add phone dialog: a QR code to scan with an authenticator app, the secret to type in by hand, and two code fields">
 

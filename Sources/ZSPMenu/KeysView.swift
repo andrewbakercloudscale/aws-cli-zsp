@@ -108,12 +108,35 @@ struct KeyCard: View {
                     .menuStyle(.borderlessButton).fixedSize()
             }
             .disabled(model.busy != nil)
+            if canAddPhone { addPhoneRow }
             if let t = model.tests[profile.profile] {
                 Label(t.text, systemImage: t.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
                     .font(.callout).foregroundStyle(t.isError ? Theme.danger : Theme.safe).textSelection(.enabled)
             }
             if let r = model.inspect, r.profile == profile.profile { InspectView(report: r) }
         }
+    }
+
+    /// The same keys the phone guide covers, until they have a phone.
+    var canAddPhone: Bool {
+        !profile.temporary && profile.remoteSerial == nil && !(profile.cannot(.mfa) && profile.mfaSerial == nil)
+    }
+
+    /// Straight to the QR code once the key is ready for it. A phone needs AWS to demand MFA
+    /// first, so a key that is not there yet goes to the guide, which does those steps.
+    var addPhoneRow: some View {
+        let ready = GuideStage.current(profile, model.audit) == .phone
+        return HStack(spacing: 10) {
+            Button {
+                if ready { model.addPhone(profile.profile) } else { model.page = .phoneGuide(profile.profile) }
+            } label: { Label("Add Google Authenticator…", systemImage: "qrcode") }
+                .buttonStyle(.pill(Theme.violet, filled: true))
+                .help("Any authenticator app works: Microsoft Authenticator, 1Password, Authy")
+            Text(ready ? "Scan a QR code, then a code from your phone approves this key when you are away from the Mac."
+                       : "AWS must require MFA on this key first. The guide takes you through it, then shows the QR code.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .disabled(model.busy != nil)
     }
 
     /// A client's key that IAM will not let change itself offers only what works.
