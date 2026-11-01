@@ -80,7 +80,8 @@ struct Options {
         while i < argv.count {
             let a = argv[i]
             if a == "--" { rest += argv[(i + 1)...]; break }
-            if Self.takesValue.contains(a), i + 1 < argv.count {
+            // The next option is not a value: `--profile --yes` lacks a profile, it is not one.
+            if Self.takesValue.contains(a), i + 1 < argv.count, !argv[i + 1].hasPrefix("--") {
                 values[a] = argv[i + 1]
                 i += 2
                 continue
@@ -103,6 +104,65 @@ struct Options {
     var profile: String? { values["--profile"] }
     /// Anything after `--` belongs to the command `exec` runs, so that keeps its own --help.
     var wantsHelp: Bool { flags.contains("--help") || flags.contains("-h") }
+
+    /// What each command accepts. Anything else stops it before it runs: `clear-sessions --profil
+    /// personal` would otherwise ignore what it could not read and clear every key's sessions.
+    struct Accepts {
+        /// Options followed by a value.
+        var values: Set<String> = []
+        /// Options on their own. `--auto` is one for import, and takes on|off for setup.
+        var switches: Set<String> = []
+        /// Arguments that are not options.
+        var words = 0
+    }
+
+    static let accepted: [String: Accepts] = {
+        let profile = Accepts(values: ["--profile"])
+        let profileAndWord = Accepts(values: ["--profile"], words: 1)
+        let none = Accepts()
+        return [
+            "import": Accepts(values: ["--profiles"], switches: ["--auto", "--all"]), "scan": none,
+            "add": Accepts(values: ["--profile", "--access-key-id"]),
+            "list": none, "ls": none, "status": none,
+            "credential-process": profile,
+            "exec": Accepts(values: ["--profile"], words: .max),
+            "duration": profileAndWord, "approve": profileAndWord, "pin": profileAndWord, "access": profileAndWord,
+            "rotate": Accepts(values: ["--profile"], switches: ["--keep-old"]),
+            "revoke-sessions": profile, "revoke": profile, "disable-key": profile, "delete-key": profile,
+            "forget": profile, "clear-sessions": profile, "inspect": profile, "test": profile,
+            "audit": Accepts(values: ["--limit"], switches: ["--verify"]),
+            "install": none, "migrate": none, "check-touch-id": none, "ui": none, "open": none,
+            "mfa": Accepts(values: ["--profile", "--name", "--serial"], words: 3),
+            "remote": Accepts(values: ["--profile", "--serial"], words: 1),
+            "setup": Accepts(values: ["--move", "--keep", "--auto", "--duration"]),
+            "doctor": Accepts(switches: ["--offline"]), "check": Accepts(switches: ["--offline"]),
+            "diagnostics": Accepts(values: ["--output"]), "support": Accepts(values: ["--output"]),
+            "selftest-watcher": none,
+            "uninstall": Accepts(switches: ["--restore-plaintext"]),
+            "version": none,
+        ]
+    }()
+
+    /// Why this command line must not run, or nil. Names options only up to any `=`, and never
+    /// repeats a stray word: either could be a secret, and this goes to the support log.
+    var problem: String? {
+        guard let accepts = Self.accepted[command] else { return nil }
+        let offered = accepts.values.union(accepts.switches).sorted().joined(separator: ", ")
+        let takes = offered.isEmpty ? "It takes no options." : "It takes: \(offered)."
+        for flag in flags.sorted() where !["--json", "--yes", "-y"].contains(flag) && !accepts.switches.contains(flag) {
+            if accepts.values.contains(flag) { return "\(flag) needs a value. Nothing was changed." }
+            let hint = command == "exec" ? " To pass it to the command being run, put -- before that command." : ""
+            return "\(command) does not take \(flag.prefix { $0 != "=" }). \(takes) Nothing was changed.\(hint)"
+        }
+        for name in values.keys.sorted() where !accepts.values.contains(name) {
+            return "\(command) does not take \(name) with a value. \(takes) Nothing was changed."
+        }
+        if rest.count > accepts.words {
+            let allowed = accepts.words == 0 ? "no other arguments" : "at most \(accepts.words) other argument\(accepts.words == 1 ? "" : "s")"
+            return "\(command) takes \(allowed), and got \(rest.count). Options start with --. Nothing was changed."
+        }
+        return nil
+    }
 }
 
 let opts = Options(Array(CommandLine.arguments.dropFirst()))

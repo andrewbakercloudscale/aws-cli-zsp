@@ -284,6 +284,10 @@ aws-cli-zsp uninstall [--restore-plaintext]
 `--help` or `-h` on any command prints the command list and does nothing else; after `--`, as in
 `exec --profile P -- aws --help`, it goes to the command being run.
 
+A command stops without changing anything (exit 2) if it is given an option it does not take,
+an option with no value, or too many arguments. A typo such as `clear-sessions --profil P`
+cannot end up applying to every key.
+
 ## Support and diagnostics
 
 When something does not work, open the panel: **Overview › Health checks › Run checks**.

@@ -12,6 +12,7 @@ let quiet = opts.command == "credential-process" || (opts.command == "import" &&
 Log.configure(paths, process: opts.flags.contains("--auto") ? "watcher" : "cli")
 let summary = ([opts.command] + opts.values.keys.sorted().map { $0 == "--profile" ? "--profile \(opts.profile ?? "")" : $0 } + opts.flags.sorted()).joined(separator: " ")
 if quiet { Log.debug("cli", summary) } else if !opts.command.isEmpty { Log.info("cli", summary) }
+if let problem = opts.problem { fail("\(problem)\nSee aws-cli-zsp --help.", code: 2) }
 
 
 run {
