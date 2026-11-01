@@ -44,7 +44,7 @@ and adds:
 
 <img src="docs/images/overview.png" width="560" alt="Overview tab">
 
-**Keys:** test, check in AWS, rotate, revoke
+**Keys:** test, check in AWS, rotate, revoke, session length, add Google Authenticator
 
 <img src="docs/images/keys.png" width="560" alt="Keys tab">
 
@@ -281,6 +281,8 @@ aws-cli-zsp uninstall [--restore-plaintext]
 ```
 
 `--json` on any command prints a machine-readable result, which is what the menu bar app uses.
+`--help` or `-h` on any command prints the command list and does nothing else; after `--`, as in
+`exec --profile P -- aws --help`, it goes to the command being run.
 
 ## Support and diagnostics
 

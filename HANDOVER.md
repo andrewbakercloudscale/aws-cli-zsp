@@ -1,11 +1,11 @@
 # Handover: aws-cli-zsp
 
-Updated 2026-10-31. Version 0.3.4 is on `main` and has no tag. v0.3.2 is the latest release.
+Updated 2026-11-01. Version 0.3.5 is on `main` and has no tag. v0.3.2 is the latest release.
 
 ## State
 
 - The work is committed and pushed, and the tree is clean.
-- Tests: 65 run, 1 is skipped, and all pass.
+- Tests: 98 run, 1 is skipped, and all pass.
 - The installed app at `~/Applications/aws-cli-zsp.app` matches `main`, and the menu bar app is running.
 - `aws-cli-zsp doctor` on the owner's Mac passes. It shows two warnings:
   - MFA is not enforced.
