@@ -240,6 +240,18 @@ seed, and `remote enable` refuses to make it until `mfa enforce` has run. So a p
 reads it gets a key AWS refuses without a code from your phone, which it does not have. The
 code AWS sees once and rejects on reuse; it is in your chat for 30 seconds of usefulness.
 
+This works with the screen locked. That no-prompt key opens after the first unlock since the
+Mac started, locked or not, so a program already running as you can read cached sessions and
+that copy while the screen is locked, as it could while unlocked. Long-lived keys stay behind
+Touch ID. After a restart nothing opens until you log in at the Mac, so phone approval cannot
+bring back a Mac that has rebooted. Vaults from before 0.3.7 reseal at the first unlock.
+
+The account pin lives in the login Keychain, which asks before a new build reads an item, so
+after an update it cannot be read until someone is at the Mac. While nobody is, sessions go
+ahead without that check, compared only to the account last shown, and each one writes
+`pin.unverified` to the audit trail. The full check resumes when you are back. A program
+running as you could exploit that gap with a forged cached session, but not to get your key.
+
 The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`,
 `iam:PutUserPolicy` and `iam:GetUserPolicy` (phone approval checks the require-MFA policy is
 still attached) on itself for these commands, and `iam:DeleteUserPolicy`,

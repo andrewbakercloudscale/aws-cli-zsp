@@ -34,6 +34,10 @@ extension Vault {
         let data: Data?
         do {
             data = try store.read(.session, profile)
+        } catch where isDeviceLocked(error) {
+            // The session is fine and the Mac is locked: deleting it would lose a good session.
+            Log.warning("session", "the cached session for \(profile) cannot be opened while the Mac is locked")
+            return nil
         } catch {
             // A damaged or unopenable session (a cut-short file, a new enclave key) costs one
             // Touch ID for a new session rather than failing every command until it is cleared.
@@ -48,6 +52,12 @@ extension Vault {
         }
         guard let exp = s.expiration, exp > t.addingTimeInterval(300) else { return nil }
         guard try isPinnedSession(profile, s) else {
+            // Issued while the pin could not be updated. Someone is back and the pin can be
+            // read: it costs one Touch ID, not an alarm, and vouches for nothing.
+            if meta.all()[profile]?.awaySessionKeyId == s.accessKeyId {
+                Log.info("session", "the session for \(profile) approved while away is replaced now the pin can be read")
+                return nil
+            }
             try store.delete(.session, profile)
             recordFailure(.sessionSwapped, profile: profile, detail: ["found": maskKeyId(s.accessKeyId)], requester: requester)
             throw ZSPError.auth("""
@@ -103,7 +113,14 @@ extension Vault {
     /// runs over Remote Control after asking you for the code. AWS checks the code.
     public func approve(_ profile: String, code: String, requester: String) throws -> AWSCredentials {
         guard TOTP.isCode(code) else { throw ZSPError.invalid("an MFA code is 6 digits") }
-        guard let serial = meta.all()[profile]?.remoteSerial, let data = try store.read(.remote, profile) else {
+        let sealed: Data?
+        do {
+            sealed = try store.read(.remote, profile)
+        } catch where isDeviceLocked(error) {
+            throw ZSPError.auth("The phone-approval copy of “\(profile)” was sealed by an older version and cannot be opened while the Mac is locked. "
+                + "Unlock the Mac once: aws-cli-zsp reseals it, and after that a code works on a locked Mac. Your code was not used.")
+        }
+        guard let serial = meta.all()[profile]?.remoteSerial, let data = sealed else {
             throw ZSPError.invalid("Approval by MFA code is not set up for “\(profile)”. " + phoneSetupAdvice(profile))
         }
         let key = try decodeKey(data, profile)

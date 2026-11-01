@@ -1,3 +1,5 @@
+import CryptoKit
+import Security
 import XCTest
 @testable import ZSPCore
 
@@ -141,6 +143,65 @@ final class KeychainTests: XCTestCase {
 
 /// The real Secure Enclave. Only the no-prompt tier is read here: the guarded tier needs a finger.
 final class EnclaveTests: XCTestCase {
+    /// When-unlocked enclave keys cannot be created on a locked Mac.
+    static var macIsUnlocked: Bool {
+        guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], nil) else { return false }
+        return (try? SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access)) != nil
+    }
+
+    func tempStore() -> (EnclaveStore, URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsp-enclave-\(UUID().uuidString)")
+        return (EnclaveStore(dir: dir), dir)
+    }
+
+    /// An item as the old version sealed it: to the when-unlocked key, as envelope v1.
+    func sealLegacy(_ store: EnclaveStore, _ kind: SecretKind, _ account: String, _ data: Data) throws {
+        let ephemeral = P256.KeyAgreement.PrivateKey()
+        let epk = ephemeral.publicKey.x963Representation
+        let shared = try ephemeral.sharedSecretFromKeyAgreement(with: try store.publicKey(.open))
+        let box = try AES.GCM.seal(data, using: EnclaveStore.derive(shared, epk), authenticating: EnclaveStore.aad(kind, account))
+        let url = store.itemURL(kind, account)
+        try store.ensureDir(url.deletingLastPathComponent())
+        try JSONEncoder().encode(EnclaveStore.Envelope(v: 1, epk: epk, box: box.combined!)).write(to: url)
+    }
+
+    func version(_ store: EnclaveStore, _ kind: SecretKind, _ account: String) throws -> Int {
+        try JSONDecoder().decode(EnclaveStore.Envelope.self, from: Data(contentsOf: store.itemURL(kind, account))).v
+    }
+
+    func testNewItemsUseTheKeyThatOpensOnALockedMac() throws {
+        try XCTSkipUnless(EnclaveStore.isAvailable)
+        let (store, dir) = tempStore(); defer { try? FileManager.default.removeItem(at: dir) }
+        try store.write(.remote, "p", Data("copy".utf8))
+        XCTAssertEqual(try version(store, .remote, "p"), 2)
+        XCTAssertEqual(try store.read(.remote, "p"), Data("copy".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.keyURL(.open).path))
+    }
+
+    func testOldItemsAreResealedAndTheSweepRunsOnce() throws {
+        try XCTSkipUnless(EnclaveStore.isAvailable)
+        try XCTSkipUnless(Self.macIsUnlocked, "the Mac is locked")
+        let (store, dir) = tempStore(); defer { try? FileManager.default.removeItem(at: dir) }
+        try sealLegacy(store, .remote, "p", Data("copy".utf8))
+        try sealLegacy(store, .session, "p", Data("session".utf8))
+        XCTAssertEqual(try version(store, .remote, "p"), 1)
+        store.migrateUnattended()
+        XCTAssertEqual(try version(store, .remote, "p"), 2)
+        XCTAssertEqual(try version(store, .session, "p"), 2)
+        XCTAssertEqual(try store.read(.remote, "p"), Data("copy".utf8))
+        XCTAssertEqual(try store.read(.session, "p"), Data("session".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.migrationMarker.path))
+    }
+
+    func testAnOldItemStaysReadableIfTheSweepHasNotRun() throws {
+        try XCTSkipUnless(EnclaveStore.isAvailable)
+        try XCTSkipUnless(Self.macIsUnlocked, "the Mac is locked")
+        let (store, dir) = tempStore(); defer { try? FileManager.default.removeItem(at: dir) }
+        try sealLegacy(store, .remote, "p", Data("copy".utf8))
+        XCTAssertEqual(try store.read(.remote, "p"), Data("copy".utf8))
+        XCTAssertEqual(try version(store, .remote, "p"), 2, "reading it reseals it")
+    }
+
     func testSealOpenAndBinding() throws {
         try XCTSkipUnless(EnclaveStore.isAvailable)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsp-enclave-\(UUID().uuidString)")
@@ -157,6 +218,8 @@ final class EnclaveTests: XCTestCase {
         try FileManager.default.copyItem(at: store.itemURL(.session, "a b/c"), to: store.itemURL(.session, "other"))
         XCTAssertThrowsError(try store.read(.session, "other"))
 
+        // Creating the guarded key needs an unlocked Mac; the rest of this test does not.
+        try XCTSkipUnless(Self.macIsUnlocked, "the Mac is locked")
         // Writing a guarded item needs no Touch ID; peeking at one never prompts.
         try store.write(.master, "p", Data("secret".utf8))
         XCTAssertEqual(try store.accounts(.master), ["p"])

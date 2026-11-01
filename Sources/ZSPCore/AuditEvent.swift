@@ -18,7 +18,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case phoneCreated = "mfa.phone.created", phoneCancelled = "mfa.phone.cancelled"
     case remoteEnabled = "remote.enabled", remoteDisabled = "remote.disabled"
 
-    case pinSet = "pin.set", pinReset = "pin.reset"
+    case pinSet = "pin.set", pinReset = "pin.reset", pinUnverified = "pin.unverified"
     case accessDenied = "access.denied", accessSet = "access.set"
 
     case settingsDuration = "settings.duration", setupDone = "setup.done"
@@ -40,6 +40,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
         case .keyRestored: return "Key written back to file"
         case .keysMigrated: return "Keys migrated"
         case .keySwapped: return "Key to another account refused"
+        case .pinUnverified: return "Nobody at the Mac: account pin not checked"
         case .sessionIssued: return "Session issued"
         case .sessionServed: return "Session used"
         case .sessionFailed: return "Session request failed"

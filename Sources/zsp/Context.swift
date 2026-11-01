@@ -1,6 +1,7 @@
 import CoreGraphics
 import Darwin
 import Foundation
+import Security
 import ZSPCore
 
 /// The real path of this binary: what credential_process lines and launch agents point at.
@@ -26,8 +27,12 @@ func makeVault() -> Vault {
     let store = EnclaveStore(dir: paths.supportDir.appendingPathComponent("vault"))
     let presence = DeviceOwnerPresence(enclaveGated: true)
     store.context = { presence.context }
+    store.migrateUnattended()
     let vault = Vault(paths: paths, store: store, auth: presence, aws: AWSQueryService(), commandPath: selfPath())
     vault.someoneAtMac = someoneAtMac
+    // A Keychain dialog on a locked Mac waits forever where nobody can see it: `pin show` and
+    // every session check hung on one. With nobody here it fails at once instead.
+    if !someoneAtMac() { SecKeychainSetUserInteractionAllowed(false) }
     // Pins live in the login Keychain, outside the vault folder. A sandbox has none.
     if !inSandbox {
         vault.pins = KeychainStore()

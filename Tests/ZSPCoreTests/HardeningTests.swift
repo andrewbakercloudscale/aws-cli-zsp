@@ -150,6 +150,7 @@ final class HardeningTests: XCTestCase {
 final class SealingKeyTests: XCTestCase {
     func testASwappedSealingKeyIsRefused() throws {
         try XCTSkipUnless(EnclaveStore.isAvailable)
+        try XCTSkipUnless(EnclaveTests.macIsUnlocked, "the Mac is locked")
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("zsp-seal-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let pins = MemoryStore()

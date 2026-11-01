@@ -18,6 +18,13 @@ public enum SecretKind: String, CaseIterable, Sendable {
     case sealingKey = "sealing-key"
 }
 
+/// The chip or the Keychain refused because the Mac is locked: nothing is wrong with the item.
+public func isDeviceLocked(_ error: Error) -> Bool {
+    if case ZSPError.keychain(let status, _) = error { return status == errSecInteractionNotAllowed }
+    let e = error as NSError
+    return e.domain == NSOSStatusErrorDomain && e.code == Int(errSecInteractionNotAllowed)
+}
+
 public protocol SecretStore: AnyObject {
     func read(_ kind: SecretKind, _ account: String) throws -> Data?
     /// `read` that never puts up a macOS dialog: nil when the Keychain would have asked.

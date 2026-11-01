@@ -1,4 +1,5 @@
 import XCTest
+import Security
 @testable import ZSPCore
 
 final class VaultTests: XCTestCase {
@@ -71,6 +72,44 @@ final class VaultTests: XCTestCase {
         let vault = Vault(paths: s.paths, store: Broken(), auth: s.auth, aws: s.aws, commandPath: "/zsp")
         XCTAssertThrowsError(try vault.importPlaintext(origin: "test"))
         XCTAssertEqual(s.credentials, screenshotCredentials)
+    }
+
+    /// The chip refusing because the Mac is locked says nothing about the item.
+    final class LockedStore: SecretStore {
+        let inner = MemoryStore()
+        var locked = false
+        var deleted: [String] = []
+        let refusal = NSError(domain: NSOSStatusErrorDomain, code: Int(errSecInteractionNotAllowed))
+        func read(_ kind: SecretKind, _ account: String) throws -> Data? {
+            if locked, kind == .session || kind == .remote { throw refusal }
+            return try inner.read(kind, account)
+        }
+        func peek(_ kind: SecretKind, _ account: String) -> Data? { inner.peek(kind, account) }
+        func write(_ kind: SecretKind, _ account: String, _ data: Data) throws { try inner.write(kind, account, data) }
+        func delete(_ kind: SecretKind, _ account: String) throws { deleted.append(account); try inner.delete(kind, account) }
+        func accounts(_ kind: SecretKind) throws -> [String] { try inner.accounts(kind) }
+    }
+
+    func testALockedMacDoesNotDeleteAGoodSession() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let store = LockedStore()
+        let vault = Vault(paths: s.paths, store: store, auth: s.auth, aws: s.aws, commandPath: "/zsp")
+        vault.someoneAtMac = { false }
+        try store.write(.session, "p", Data("{}".utf8))
+        store.locked = true
+        XCTAssertThrowsError(try vault.credentials(for: "p", requester: "test"))
+        XCTAssertEqual(store.deleted, [], "the session is still good once the Mac is unlocked")
+        XCTAssertNotNil(try store.inner.read(.session, "p"))
+    }
+
+    func testApproveOnALockedMacWithAnOldCopySaysToUnlockOnce() throws {
+        let s = Sandbox(); defer { s.cleanup() }
+        let store = LockedStore()
+        let vault = Vault(paths: s.paths, store: store, auth: s.auth, aws: s.aws, commandPath: "/zsp")
+        store.locked = true
+        XCTAssertThrowsError(try vault.approve("p", code: "123456", requester: "test")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Unlock the Mac once"), error.localizedDescription)
+        }
     }
 
     func testSessionsAreCachedAndTouchIDGuardsTheKey() throws {

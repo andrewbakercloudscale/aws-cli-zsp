@@ -8,15 +8,22 @@ import Security
 /// Each secret is encrypted (P-256 ECDH, HKDF-SHA256, AES-GCM) to a Secure Enclave key that
 /// never leaves the chip. The long-lived access keys use a key created with `.userPresence`,
 /// so the chip itself refuses to decrypt them until you have used Touch ID (or your password)
-/// for that request. Sessions and the audit anchor use a second enclave key with no prompt,
-/// which keeps them unreadable off this Mac and out of a plain `cat`.
+/// for that request. Sessions, the phone-approval copy and the audit anchor use a second enclave
+/// key with no prompt, which keeps them unreadable off this Mac and out of a plain `cat`.
+///
+/// That second key opens while the screen is locked, and only after the first unlock since boot.
+/// It has to: phone approval exists for when nobody is at the Mac, and a key limited to an
+/// unlocked Mac made `approve` fail with -25308 in exactly that case. Items sealed to the old
+/// when-unlocked key (envelope v1) still open on an unlocked Mac and are resealed by
+/// `migrateUnattended`. The long-lived keys stay behind Touch ID, unaffected.
 ///
 /// Why not ordinary Keychain items: on macOS an item made by a binary with no Apple Team ID
 /// is bound to that build's exact code hash. Every update then hit a "wants to use your
 /// confidential information" *password* dialog with no Touch ID, for its own keys. The
 /// enclave does not care which build asks; it cares that your finger did.
 public final class EnclaveStore: SecretStore {
-    enum Tier: String { case guarded, open }
+    /// `open` is the retired when-unlocked key: read to migrate old items, never written to.
+    enum Tier: String { case guarded, open, unattended }
 
     let dir: URL
     /// The LAContext carrying the reason shown in the Touch ID dialog, set by
@@ -33,7 +40,12 @@ public final class EnclaveStore: SecretStore {
 
     public static var isAvailable: Bool { SecureEnclave.isAvailable }
 
-    static func tier(_ kind: SecretKind) -> Tier { kind == .master ? .guarded : .open }
+    static func tier(_ kind: SecretKind) -> Tier { kind == .master ? .guarded : .unattended }
+    /// The key an item was sealed to, which for an old item is not the one it would use today.
+    static func tier(_ kind: SecretKind, sealedAs version: Int) -> Tier {
+        kind == .master ? .guarded : version >= unattendedVersion ? .unattended : .open
+    }
+    static let unattendedVersion = 2
 
     func itemURL(_ kind: SecretKind, _ account: String) -> URL {
         let hex = Data(account.utf8).map { String(format: "%02x", $0) }.joined()
@@ -57,7 +69,8 @@ public final class EnclaveStore: SecretStore {
         guard SecureEnclave.isAvailable else { throw ZSPError.invalid("this Mac has no Secure Enclave") }
         var error: Unmanaged<CFError>?
         let flags: SecAccessControlCreateFlags = t == .guarded ? [.privateKeyUsage, .userPresence] : [.privateKeyUsage]
-        guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, flags, &error) else {
+        let protection = t == .unattended ? kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly : kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        guard let access = SecAccessControlCreateWithFlags(nil, protection, flags, &error) else {
             throw ZSPError.invalid("cannot create the enclave access policy: \(error?.takeRetainedValue().localizedDescription ?? "?")")
         }
         let key = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access)
@@ -124,7 +137,8 @@ public final class EnclaveStore: SecretStore {
         let shared = try ephemeral.sharedSecretFromKeyAgreement(with: try publicKey(Self.tier(kind)))
         let box = try AES.GCM.seal(data, using: Self.derive(shared, epk), authenticating: Self.aad(kind, account))
         guard let combined = box.combined else { throw ZSPError.io("AES-GCM gave no sealed box for \(kind.rawValue) \(account)") }
-        let sealed = try JSONEncoder().encode(Envelope(v: 1, epk: epk, box: combined))
+        let version = Self.tier(kind) == .unattended ? Self.unattendedVersion : 1
+        let sealed = try JSONEncoder().encode(Envelope(v: version, epk: epk, box: combined))
         let url = itemURL(kind, account)
         try ensureDir(url.deletingLastPathComponent())
         try writeData(sealed, to: url)
@@ -140,20 +154,47 @@ public final class EnclaveStore: SecretStore {
             Log.error("vault", "\(itemURL(kind, account).lastPathComponent) (\(kind.rawValue) \(account)) is not a sealed item: \(error)")
             throw ZSPError.invalid("The sealed \(kind.rawValue) for “\(account)” is damaged")
         }
+        let sealedTo = Self.tier(kind, sealedAs: env.v)
         let shared: SharedSecret
         do {
             let epk = try P256.KeyAgreement.PublicKey(x963Representation: env.epk)
-            shared = try privateKey(Self.tier(kind)).sharedSecretFromKeyAgreement(with: epk)
+            shared = try privateKey(sealedTo).sharedSecretFromKeyAgreement(with: epk)
         } catch {
             if Self.tier(kind) == .guarded { throw ZSPError.auth("Not approved: \(error.localizedDescription)") }
             throw error
         }
         let box = try AES.GCM.SealedBox(combined: env.box)
-        return try AES.GCM.open(box, using: Self.derive(shared, env.epk), authenticating: Self.aad(kind, account))
+        let opened = try AES.GCM.open(box, using: Self.derive(shared, env.epk), authenticating: Self.aad(kind, account))
+        if sealedTo == .open {
+            do { try write(kind, account, opened) } catch {
+                Log.warning("vault", "could not reseal \(kind.rawValue) \(account): \(error.localizedDescription)")
+            }
+        }
+        return opened
+    }
+
+    var migrationMarker: URL { dir.appendingPathComponent("keys/unattended.migrated") }
+
+    /// Reseals items from the when-unlocked key, so phone approval works on a locked Mac from the
+    /// first unlock after updating. While locked those items cannot be opened, so it stops and
+    /// tries again at the next command. Reading an item is what reseals it.
+    public func migrateUnattended() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: keyURL(.open).path), !fm.fileExists(atPath: migrationMarker.path) else { return }
+        for kind in SecretKind.allCases where kind != .master {
+            for account in (try? accounts(kind)) ?? [] {
+                do { _ = try read(kind, account) } catch where isDeviceLocked(error) { return } catch {
+                    Log.warning("vault", "\(kind.rawValue) \(account) was not resealed: \(error.localizedDescription)")
+                }
+            }
+        }
+        do { try writeData(Data(), to: migrationMarker); Log.info("vault", "resealed items so phone approval works on a locked Mac") } catch {
+            Log.warning("vault", "could not record the reseal: \(error.localizedDescription)")
+        }
     }
 
     public func peek(_ kind: SecretKind, _ account: String) -> Data? {
-        Self.tier(kind) == .open ? (try? read(kind, account)) ?? nil : nil
+        Self.tier(kind) == .unattended ? (try? read(kind, account)) ?? nil : nil
     }
 
     public func delete(_ kind: SecretKind, _ account: String) throws {
