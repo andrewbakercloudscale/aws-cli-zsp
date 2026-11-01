@@ -95,8 +95,8 @@ extension Vault {
                 + "(and retry). Or approve at the Mac and retry.")
         }
         return .auth("Nobody is at the Mac to approve Touch ID for AWS profile “\(profile)”, and approval by MFA code is not set up "
-            + "for it. Approve at the Mac and retry; to approve from a phone next time, run at the Mac: "
-            + "aws-cli-zsp remote enable --profile \(profile)")
+            + "for it. Approve at the Mac and retry. "
+            + phoneSetupAdvice(profile))
     }
 
     /// Issues a session approved by a code from your phone, with no Touch ID: what Claude Code
@@ -104,7 +104,7 @@ extension Vault {
     public func approve(_ profile: String, code: String, requester: String) throws -> AWSCredentials {
         guard TOTP.isCode(code) else { throw ZSPError.invalid("an MFA code is 6 digits") }
         guard let serial = meta.all()[profile]?.remoteSerial, let data = try store.read(.remote, profile) else {
-            throw ZSPError.invalid("Approval by MFA code is not set up for “\(profile)”. At the Mac: aws-cli-zsp remote enable --profile \(profile)")
+            throw ZSPError.invalid("Approval by MFA code is not set up for “\(profile)”. " + phoneSetupAdvice(profile))
         }
         let key = try decodeKey(data, profile)
         try paths.ensureSupportDir()

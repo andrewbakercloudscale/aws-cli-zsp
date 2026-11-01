@@ -67,7 +67,8 @@ func cmdAdd() throws {
 }
 
 func cmdList() {
-    let profiles = makeVault().list()
+    let vault = makeVault()
+    let profiles = vault.list()
     let findings = Scanner.scan(paths)
     struct ListResult: Encodable { let profiles: [ProfileMeta]; let plaintext: [Finding] }
     var lines: [String] = []
@@ -83,6 +84,7 @@ func cmdList() {
         if p.readOnly { mfa += " [read-only]" }
         else if let d = p.iamDenied, !d.isEmpty, p.access == nil { mfa += " [IAM refuses: \(d.map(\.rawValue).joined(separator: ","))]" }
         lines.append("\(p.profile)  \(p.maskedKeyId)\(status)\(mfa)\(missing)  \(session)  used \(ago(p.lastUsedAt))\(p.lastRequester.map { " by \($0)" } ?? "")")
+        if vault.waitingPhone(p.profile) != nil { lines.append("  \(vault.phoneSetupAdvice(p.profile))") }
     }
     for f in findings { lines.append("PLAINTEXT  \(f.profile)  \(maskKeyId(f.accessKeyId))  \(f.file)") }
     done(ListResult(profiles: profiles, plaintext: findings), lines.joined(separator: "\n"))

@@ -219,6 +219,9 @@ Authenticator, 1Password, Authy. There is no push approval: AWS IAM MFA is codes
 read the code and send it. A phone you added in the IAM console already works too:
 **Phone already in IAM…** (`aws-cli-zsp remote enable --profile bedrock`).
 
+Added a phone but never typed its two codes? `aws-cli-zsp status` says so and gives the exact
+command to finish or start again, and so does the error when nobody is at the Mac.
+
 With Claude Code Remote Control, from your phone:
 
 1. Ask Claude for something that needs AWS. Nobody is at the Mac, so instead of a Touch ID

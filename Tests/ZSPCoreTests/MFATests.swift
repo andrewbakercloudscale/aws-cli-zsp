@@ -163,6 +163,92 @@ final class MFAUndoTests: XCTestCase {
         XCTAssertNotNil(try s.store.read(.remote, "bedrock"))
     }
 
+    func testAPhoneNeverConfirmedIsNamedEverywherePhoneApprovalIsSaidToBeOff() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        let d = try s.vault.addPhone("bedrock", deviceName: "aws-cli-zsp-phone-bedrock")
+        XCTAssertEqual(s.vault.waitingPhone("bedrock"), d.serial)
+        let finish = "mfa confirm-phone --profile bedrock --serial \(d.serial) CODE1 CODE2"
+        XCTAssertTrue(s.vault.phoneSetupAdvice("bedrock").contains(finish))
+        XCTAssertTrue(s.vault.phoneSetupAdvice("bedrock").contains("mfa cancel-phone --profile bedrock --serial \(d.serial)"))
+        XCTAssertFalse(s.vault.phoneSetupAdvice("bedrock").contains("remote enable"), "that finds no device: AWS lists it only once enabled")
+
+        s.vault.someoneAtMac = { false }
+        XCTAssertThrowsError(try s.vault.credentials(for: "bedrock", requester: "aws s3 ls")) { XCTAssertTrue("\($0)".contains(finish), "\($0)") }
+        XCTAssertThrowsError(try s.vault.approve("bedrock", code: "123456", requester: "t")) { XCTAssertTrue("\($0)".contains(finish), "\($0)") }
+        XCTAssertThrowsError(try s.vault.enableRemote("bedrock", serial: nil)) { XCTAssertTrue("\($0)".contains(finish), "\($0)") }
+    }
+
+    func testNoPhoneWaitingStillSendsYouToRemoteEnable() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        XCTAssertNil(s.vault.waitingPhone("bedrock"))
+        s.vault.someoneAtMac = { false }
+        for attempt in [{ _ = try s.vault.credentials(for: "bedrock", requester: "aws s3 ls") },
+                        { _ = try s.vault.approve("bedrock", code: "123456", requester: "t") }] {
+            XCTAssertThrowsError(try attempt()) {
+                XCTAssertTrue("\($0)".contains("remote enable --profile bedrock"), "\($0)")
+                XCTAssertFalse("\($0)".contains("confirm-phone"), "\($0)")
+            }
+        }
+        XCTAssertThrowsError(try s.vault.enableRemote("bedrock", serial: nil)) { XCTAssertTrue("\($0)".contains("mfa add-phone"), "\($0)") }
+    }
+
+    func testAPhoneStopsWaitingOnceConfirmedOrCancelled() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        let cancelled = try s.vault.addPhone("bedrock", deviceName: "phone-a")
+        try s.vault.cancelPhone("bedrock", serial: cancelled.serial)
+        XCTAssertNil(s.vault.waitingPhone("bedrock"), "cancelled")
+
+        let confirmed = try s.vault.addPhone("bedrock", deviceName: "phone-b")
+        try s.vault.confirmPhone("bedrock", serial: confirmed.serial, code1: "123456", code2: "654321")
+        XCTAssertNil(s.vault.waitingPhone("bedrock"), "confirmed")
+        try s.vault.disableRemote("bedrock")
+        XCTAssertNil(s.vault.waitingPhone("bedrock"), "confirmed, then phone approval turned off: nothing to finish")
+    }
+
+    func testAPhoneDoesNotWaitOncePhoneApprovalIsOnThroughAnother() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        _ = try s.vault.addPhone("bedrock", deviceName: "phone-never-scanned")
+        s.aws.mfaDevices.append("arn:aws:iam::123456789012:mfa/phone-in-iam")
+        _ = try s.vault.enableRemote("bedrock", serial: "arn:aws:iam::123456789012:mfa/phone-in-iam")
+        XCTAssertNil(s.vault.waitingPhone("bedrock"), "codes already approve this key")
+    }
+
+    func testOnlyTheNewestOfSeveralWaitingPhonesAndOnlyItsOwnProfile() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        let older = try s.vault.addPhone("bedrock", deviceName: "phone-a")
+        let newer = try s.vault.addPhone("bedrock", deviceName: "phone-b")
+        try s.vault.audit.append(.phoneCreated, profile: "other", detail: ["device": "arn:aws:iam::123456789012:mfa/other"])
+        XCTAssertEqual(s.vault.waitingPhone("bedrock"), newer.serial)
+        try s.vault.cancelPhone("bedrock", serial: newer.serial)
+        XCTAssertEqual(s.vault.waitingPhone("bedrock"), older.serial)
+        XCTAssertNil(s.vault.waitingPhone("other"), "not a key in the vault")
+    }
+
+    func testAPhoneDoesNotWaitOnceAWSNoLongerDemandsMFA() throws {
+        let s = try enforced(); defer { s.cleanup() }
+        _ = try s.vault.addPhone("bedrock", deviceName: "phone")
+        try s.vault.unenforceMFA("bedrock")
+        XCTAssertNil(s.vault.waitingPhone("bedrock"), "confirm-phone would refuse: run mfa enforce first")
+    }
+
+    /// The class of fault: a message saying phone approval is off that forgets a waiting phone.
+    func testOnlyTheAdviceSendsAnyoneToRemoteEnable() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/ZSPCore")
+        let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
+        let swift = files.filter { $0.pathExtension == "swift" }
+        XCTAssertGreaterThan(swift.count, 5, "the sources were found")
+        let found = try swift.flatMap { url in
+            try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+                .filter { $0.contains("remote enable") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+                .map { "\(url.lastPathComponent): \($0)" }
+        }
+        XCTAssertEqual(found.count, 1, found.joined(separator: "\n"))
+        XCTAssertTrue(found.first?.hasPrefix("Vault+Phone.swift") == true, found.joined(separator: "\n"))
+        let status = sources.deletingLastPathComponent().appendingPathComponent("zsp/KeyCommands.swift")
+        XCTAssertTrue(try String(contentsOf: status, encoding: .utf8).contains("vault.phoneSetupAdvice(p.profile)"), "status names the waiting phone")
+    }
+
     func testAddPhoneNeedsEnforcement() throws {
         let s = Sandbox(); defer { s.cleanup() }
         s.write(credentials: screenshotCredentials)

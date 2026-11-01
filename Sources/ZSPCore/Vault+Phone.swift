@@ -55,6 +55,34 @@ extension Vault {
         try audit.append(.phoneCancelled, profile: profile, detail: ["device": serial])
     }
 
+    /// The newest phone added with `add-phone` that never got its two codes. AWS does not list a
+    /// device for its user until it is enabled, so this comes from the audit trail.
+    public func waitingPhone(_ profile: String) -> String? {
+        guard let p = meta.all()[profile], p.mfaEnforced == true, p.remoteSerial == nil else { return nil }
+        var waiting: [String] = []
+        for e in audit.entries() where e.profile == profile {
+            guard let device = e.detail["device"] else { continue }
+            switch AuditEvent(rawValue: e.event) {
+            case .phoneCreated: waiting.append(device)
+            case .phoneCancelled, .remoteEnabled: waiting.removeAll { $0 == device }
+            default: break
+            }
+        }
+        return waiting.last
+    }
+
+    /// What to do next to approve `profile` from a phone. Every message that says phone approval
+    /// is not on takes its advice from here, so none of them misses a phone already waiting.
+    public func phoneSetupAdvice(_ profile: String) -> String {
+        guard let serial = waitingPhone(profile) else {
+            return "To approve from a phone, run at the Mac: aws-cli-zsp remote enable --profile \(profile)"
+        }
+        return "A phone was added but never confirmed. At the Mac, with two codes in a row from your authenticator app: "
+            + "aws-cli-zsp mfa confirm-phone --profile \(profile) --serial \(serial) CODE1 CODE2. "
+            + "If the app has no entry for it, the QR code was never scanned: "
+            + "aws-cli-zsp mfa cancel-phone --profile \(profile) --serial \(serial), then aws-cli-zsp mfa add-phone --profile \(profile)."
+    }
+
     func requireEnforced(_ profile: String, _ master: MasterKey) throws {
         guard meta.all()[profile]?.mfaEnforced == true, master.mfaSerial != nil else {
             throw ZSPError.invalid("Run aws-cli-zsp mfa setup and mfa enforce for \(profile) first. Without them, the copy remote approval keeps would work with no code at all.")
@@ -129,6 +157,7 @@ extension Vault {
         }
         switch devices.count {
         case 1: return devices[0]
+        case 0 where waitingPhone(profile) != nil: throw ZSPError.invalid(phoneSetupAdvice(profile))
         case 0: throw ZSPError.invalid("This IAM user has no MFA device besides this Mac's. Add your phone: aws-cli-zsp mfa add-phone --profile \(profile) (or Add phone… in the MFA & phone tab).")
         default: throw ZSPError.invalid("This IAM user has several MFA devices; choose one with --serial: \(devices.joined(separator: ", "))")
         }
