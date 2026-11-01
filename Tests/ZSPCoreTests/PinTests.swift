@@ -16,13 +16,19 @@ final class PinTests: XCTestCase {
     final class SilentPins: SecretStore {
         let inner = MemoryStore()
         var refuse = false
+        var refuseWrites = false
+        /// Reads made while the real Keychain would have been free to put up a dialog.
+        var readsThatCouldAsk = 0
         func read(_ kind: SecretKind, _ account: String) throws -> Data? {
+            var allowed: DarwinBoolean = false
+            SecKeychainGetUserInteractionAllowed(&allowed)
+            if allowed.boolValue { readsThatCouldAsk += 1 }
             if refuse { throw ZSPError.keychain(errSecAuthFailed, "would need a dialog") }
             return try inner.read(kind, account)
         }
         func peek(_ kind: SecretKind, _ account: String) -> Data? { inner.peek(kind, account) }
         func write(_ kind: SecretKind, _ account: String, _ data: Data) throws {
-            if refuse { throw ZSPError.keychain(errSecAuthFailed, "would need a dialog") }
+            if refuse || refuseWrites { throw ZSPError.keychain(errSecAuthFailed, "would need a dialog") }
             try inner.write(kind, account, data)
         }
         func delete(_ kind: SecretKind, _ account: String) throws { try inner.delete(kind, account) }
@@ -36,6 +42,86 @@ final class PinTests: XCTestCase {
         s.write(credentials: screenshotCredentials)
         _ = try s.vault.importPlaintext(origin: "test")
         return (s, pins, try s.vault.credentials(for: "bedrock", requester: "at the mac"))
+    }
+
+    /// A key ready for approval by code, pinned, with someone seeming to be at the Mac.
+    func approvable() throws -> (Sandbox, SilentPins) {
+        let (s, pins, _) = try awaySandbox()
+        _ = try s.vault.setupMFA("bedrock", deviceName: "aws-cli-zsp-mac-bedrock")
+        try s.vault.enforceMFA("bedrock")
+        try s.store.write(.remote, "bedrock", try XCTUnwrap(try s.store.read(.master, "bedrock")))
+        try s.vault.meta.update("bedrock") { $0?.remoteSerial = "arn:aws:iam::123456789012:mfa/iphone" }
+        _ = try s.vault.clearSessions("bedrock")
+        pins.readsThatCouldAsk = 0
+        return (s, pins)
+    }
+
+    func testApproveCannotWaitOnADialogWhoeverSeemsToBeAtTheMac() throws {
+        let (s, pins) = try approvable(); defer { s.cleanup() }
+        pins.refuse = true
+        s.vault.someoneAtMac = { true }
+        let touchIDBefore = s.auth.reasons.count
+        let session = try s.vault.approve("bedrock", code: "654321", requester: "phone")
+        XCTAssertEqual(pins.readsThatCouldAsk, 0, "no pin read may be free to put up a dialog")
+        XCTAssertTrue(s.vault.audit.entries().contains { $0.event == "pin.unverified" })
+        XCTAssertEqual(try s.vault.credentials(for: "bedrock", requester: "aws s3 ls").accessKeyId, session.accessKeyId,
+                       "the next command is served it, also without a dialog")
+        XCTAssertEqual(pins.readsThatCouldAsk, 0)
+        XCTAssertEqual(s.auth.reasons.count, touchIDBefore, "and without Touch ID")
+    }
+
+    func testApproveKeepsTheSessionWhenOnlyThePinWriteIsRefused() throws {
+        let (s, pins) = try approvable(); defer { s.cleanup() }
+        pins.refuseWrites = true
+        let session = try s.vault.approve("bedrock", code: "654321", requester: "phone")
+        XCTAssertTrue(s.vault.audit.entries().contains { $0.event == "pin.unverified" })
+        XCTAssertEqual(s.vault.meta.all()["bedrock"]?.awaySessionKeyId, session.accessKeyId)
+        XCTAssertNotNil(try s.store.read(.session, "bedrock"))
+    }
+
+    func testApproveStillRefusesAKeyToAnotherAccount() throws {
+        let (s, pins) = try approvable(); defer { s.cleanup() }
+        s.aws.identity = CallerIdentity(account: "999999999999", arn: "arn:aws:iam::999999999999:user/attacker", userId: "AIDAX")
+        XCTAssertThrowsError(try s.vault.approve("bedrock", code: "654321", requester: "phone"))
+        pins.refuse = true
+        try s.vault.meta.update("bedrock") { $0?.pinnedAccount = "123456789012" }
+        XCTAssertThrowsError(try s.vault.approve("bedrock", code: "654321", requester: "phone"))
+        XCTAssertNil(try s.store.read(.session, "bedrock"))
+        XCTAssertNil(s.vault.meta.all()["bedrock"]?.sessionExpiresAt, "list must not show a session that is gone")
+    }
+
+    func testApproveGivesUpOnALockHeldByAnotherCommandBeforeSpendingTheCode() throws {
+        let (s, _) = try approvable(); defer { s.cleanup() }
+        s.vault.approveLockWait = 0.2
+        let calls = s.aws.mfaCodes.count
+        let holder = open(s.paths.lock("session-bedrock").path, O_CREAT | O_RDWR, 0o600)
+        defer { close(holder) }
+        XCTAssertEqual(flock(holder, LOCK_EX), 0)
+        XCTAssertThrowsError(try s.vault.approve("bedrock", code: "654321", requester: "phone")) {
+            XCTAssertTrue("\($0)".contains("Your code was not used"), "\($0)")
+        }
+        XCTAssertEqual(s.aws.mfaCodes.count, calls, "the code was not sent to AWS")
+    }
+
+    func testWithoutDialogsPutsBackWhatWasSet() {
+        func allowed() -> Bool { var a: DarwinBoolean = false; SecKeychainGetUserInteractionAllowed(&a); return a.boolValue }
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(true) }
+        withoutKeychainDialogs { }
+        XCTAssertFalse(allowed(), "a process that turned dialogs off for nobody at the Mac keeps them off")
+        SecKeychainSetUserInteractionAllowed(true)
+        withoutKeychainDialogs { XCTAssertFalse(allowed()) }
+        XCTAssertTrue(allowed())
+    }
+
+    func testASessionDroppedAsSwappedClearsTheExpiryTheAppShows() throws {
+        let (s, _) = try pinned(); defer { s.cleanup() }
+        _ = try s.vault.credentials(for: "bedrock", requester: "aws s3 ls")
+        let planted = AWSCredentials(accessKeyId: "ASIAPLANTED", secretAccessKey: "x", sessionToken: "t", expiration: Date().addingTimeInterval(3600))
+        try s.store.write(.session, "bedrock", try ZSPJSON.encoder.encode(planted))
+        XCTAssertThrowsError(try s.vault.credentials(for: "bedrock", requester: "aws s3 ls"))
+        XCTAssertNil(try s.store.read(.session, "bedrock"))
+        XCTAssertNil(s.vault.meta.all()["bedrock"]?.sessionExpiresAt)
     }
 
     func testAnUnreadablePinDoesNotBlockACachedSessionWhileAway() throws {

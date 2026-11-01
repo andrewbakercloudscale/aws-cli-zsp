@@ -25,6 +25,16 @@ public func isDeviceLocked(_ error: Error) -> Bool {
     return e.domain == NSOSStatusErrorDomain && e.code == Int(errSecInteractionNotAllowed)
 }
 
+/// Runs `body` with Keychain dialogs off, so an item that would have asked fails at once. The
+/// setting is per process, so what was set before is put back rather than turned on.
+public func withoutKeychainDialogs<T>(_ body: () throws -> T) rethrows -> T {
+    var allowed: DarwinBoolean = true
+    SecKeychainGetUserInteractionAllowed(&allowed)
+    SecKeychainSetUserInteractionAllowed(false)
+    defer { SecKeychainSetUserInteractionAllowed(allowed.boolValue) }
+    return try body()
+}
+
 public protocol SecretStore: AnyObject {
     func read(_ kind: SecretKind, _ account: String) throws -> Data?
     /// `read` that never puts up a macOS dialog: nil when the Keychain would have asked.
@@ -77,9 +87,7 @@ public final class KeychainStore: SecretStore {
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var out: CFTypeRef?
-        SecKeychainSetUserInteractionAllowed(false)
-        defer { SecKeychainSetUserInteractionAllowed(true) }
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+        return withoutKeychainDialogs { SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil }
     }
 
     public func write(_ kind: SecretKind, _ account: String, _ data: Data) throws {

@@ -5,7 +5,7 @@ Updated 2026-11-01. Version 0.3.7 is on `main` and has no tag. v0.3.2 is the lat
 ## State
 
 - The work is committed and pushed, and the tree is clean.
-- Tests: 102 run, 1 is skipped, and all pass (the Secure Enclave tests need the Mac unlocked).
+- Tests: 117 run, 1 is skipped, and all pass (the Secure Enclave tests need the Mac unlocked).
 - The installed app at `~/Applications/aws-cli-zsp.app` matches `main`, and the menu bar app is running.
 - `aws-cli-zsp doctor` on the owner's Mac passes. It shows two warnings:
   - MFA is not enforced.

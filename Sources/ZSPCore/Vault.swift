@@ -18,6 +18,10 @@ public final class Vault {
     /// or no keyboard or mouse for a while, as under Claude Code Remote Control), a new session
     /// fails at once with what to do instead, rather than waiting on a prompt nobody can see.
     public var someoneAtMac: () -> Bool = { true }
+    /// Set while a command must not wait on a Keychain dialog, whoever seems to be at the Mac.
+    var mustNotAsk = false
+    /// How long `approve` waits for another command to finish with the profile's session.
+    var approveLockWait: TimeInterval = 5
     /// Where account pins live (the login Keychain). Nil turns pinning off.
     public var pins: SecretStore?
 
@@ -90,6 +94,7 @@ public final class Vault {
 
     /// Drops the cached session and the expiry the app shows: after anything that changes
     /// which session is valid (a new key, MFA on or off, a revocation).
+    /// `list` and the app show that expiry, so a session is never dropped without it.
     func dropSession(_ profile: String) throws {
         try store.delete(.session, profile)
         bestEffort("clear the session time of \(profile)") { try meta.update(profile) { $0?.sessionExpiresAt = nil } }

@@ -42,7 +42,7 @@ extension Vault {
             // A damaged or unopenable session (a cut-short file, a new enclave key) costs one
             // Touch ID for a new session rather than failing every command until it is cleared.
             Log.warning("session", "the cached session for \(profile) cannot be opened (\(error.localizedDescription)); a new one is issued")
-            bestEffort("drop the unreadable session of \(profile)") { try store.delete(.session, profile) }
+            bestEffort("drop the unreadable session of \(profile)") { try dropSession(profile) }
             return nil
         }
         guard let data else { return nil }
@@ -58,7 +58,7 @@ extension Vault {
                 Log.info("session", "the session for \(profile) approved while away is replaced now the pin can be read")
                 return nil
             }
-            try store.delete(.session, profile)
+            try dropSession(profile)
             recordFailure(.sessionSwapped, profile: profile, detail: ["found": maskKeyId(s.accessKeyId)], requester: requester)
             throw ZSPError.auth("""
                 The cached session for “\(profile)” is not one aws-cli-zsp issued, so it was deleted and not used. \
@@ -125,13 +125,19 @@ extension Vault {
         }
         let key = try decodeKey(data, profile)
         try paths.ensureSupportDir()
-        return try withFileLock(paths.lock("session-\(profile)")) {
-            // A wrong code is AWS refusing GetSessionToken: audited once, as a refusal.
-            let session = try issue(profile, key, seconds: Settings.load(paths).duration(for: profile),
-                                    mfa: MFACode(serial: serial, code: code), approvedBy: "mfa-code", requester: requester,
-                                    failure: (.authDenied, ["for": "approval by MFA code"]))
-            try confirmStillEnforced(profile, session, requester: requester)
-            return session
+        // Another command can hold this lock for as long as a dialog at the Mac stays open, and a
+        // code lasts about 30 seconds, so give up while the code has not been spent.
+        let busy = ZSPError.auth("Another aws-cli-zsp command is using “\(profile)”, probably waiting on a dialog at the Mac. "
+            + "Answer or close it, then try again with a new code. Your code was not used.")
+        return try withFileLock(paths.lock("session-\(profile)"), timeout: approveLockWait, busy: busy) {
+            try withoutDialogs {
+                // A wrong code is AWS refusing GetSessionToken: audited once, as a refusal.
+                let session = try issue(profile, key, seconds: Settings.load(paths).duration(for: profile),
+                                        mfa: MFACode(serial: serial, code: code), approvedBy: "mfa-code", requester: requester,
+                                        failure: (.authDenied, ["for": "approval by MFA code"]))
+                try confirmStillEnforced(profile, session, requester: requester)
+                return session
+            }
         }
     }
 

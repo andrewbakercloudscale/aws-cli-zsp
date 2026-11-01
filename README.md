@@ -247,10 +247,13 @@ Touch ID. After a restart nothing opens until you log in at the Mac, so phone ap
 bring back a Mac that has rebooted. Vaults from before 0.3.7 reseal at the first unlock.
 
 The account pin lives in the login Keychain, which asks before a new build reads an item, so
-after an update it cannot be read until someone is at the Mac. While nobody is, sessions go
-ahead without that check, compared only to the account last shown, and each one writes
-`pin.unverified` to the audit trail. The full check resumes when you are back. A program
-running as you could exploit that gap with a forged cached session, but not to get your key.
+after an update it cannot be read until someone answers that dialog. `approve` never waits on
+it, even if the Mac was touched moments ago: its session goes ahead without that check, compared
+only to the account last shown, and writes `pin.unverified` to the audit trail. So does any
+session while nobody is at the Mac. The full check resumes the next time you use Touch ID at the
+Mac. A program running as you could exploit that gap with a forged cached session, but not to
+get your key. If another command holds the profile, waiting on a dialog at the Mac, `approve`
+gives up after 5 seconds without using your code.
 
 The IAM user needs `iam:CreateVirtualMFADevice`, `iam:EnableMFADevice`, `iam:ListMFADevices`,
 `iam:PutUserPolicy` and `iam:GetUserPolicy` (phone approval checks the require-MFA policy is

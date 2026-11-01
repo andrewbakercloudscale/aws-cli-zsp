@@ -72,6 +72,23 @@ public func withFileLock<T>(_ url: URL, _ body: () throws -> T) throws -> T {
     return try body()
 }
 
+/// `withFileLock` that throws `busy` rather than wait longer than `timeout` seconds.
+public func withFileLock<T>(_ url: URL, timeout: TimeInterval, busy: Error, _ body: () throws -> T) throws -> T {
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+    let fd = open(url.path, O_CREAT | O_RDWR, 0o600)
+    guard fd >= 0 else { throw ZSPError.io("cannot open lock \(url.path): \(String(cString: strerror(errno)))") }
+    defer { close(fd) }
+    let deadline = Date().addingTimeInterval(timeout)
+    while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+        guard errno == EWOULDBLOCK || errno == EINTR else { throw ZSPError.io("cannot lock \(url.path): \(String(cString: strerror(errno)))") }
+        guard Date() < deadline else { throw busy }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    defer { flock(fd, LOCK_UN) }
+    return try body()
+}
+
 /// Replaces `url` in one step, so a reader never sees half a file. A symlinked file is
 /// written through the link rather than replacing the link.
 public func writeAtomically(_ text: String, to url: URL, mode: Int = 0o600) throws {
