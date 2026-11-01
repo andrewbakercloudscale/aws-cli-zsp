@@ -1,6 +1,10 @@
 import Foundation
 import ZSPCore
 
+// Before anything else, whatever the command: `clear-sessions --help` must not clear sessions.
+if opts.wantsHelp { print(usage); exit(0) }
+if opts.flags.contains("--version") { print(version); exit(0) }
+
 // The watcher runs every few seconds and the AWS CLI calls credential-process for every
 // command: those log at debug level, everything else says which command ran (never its
 // values: profiles yes, codes and keys no).
@@ -42,8 +46,8 @@ run {
     case "pin": try cmdPin()
     case "access": try cmdAccess()
     case "uninstall": try cmdUninstall()
-    case "version", "--version": print(version)
-    case "", "help", "--help", "-h": print(usage)
+    case "version": print(version)
+    case "", "help": print(usage)
     default: fail("unknown command \(opts.command)\n\n\(usage)", code: 2)
     }
 }

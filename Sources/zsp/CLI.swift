@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import ZSPCore
 
-let version = "0.3.4"
+let version = "0.3.5"
 
 let usage = """
 aws-cli-zsp \(version) (AWS CLI: ZSP, Zero Standing Permissions): AWS keys sealed by the Secure Enclave, Touch ID to use them, never in ~/.aws in plain text.
@@ -101,6 +101,8 @@ struct Options {
     var json: Bool { flags.contains("--json") }
     var yes: Bool { flags.contains("--yes") || flags.contains("-y") }
     var profile: String? { values["--profile"] }
+    /// Anything after `--` belongs to the command `exec` runs, so that keeps its own --help.
+    var wantsHelp: Bool { flags.contains("--help") || flags.contains("-h") }
 }
 
 let opts = Options(Array(CommandLine.arguments.dropFirst()))
