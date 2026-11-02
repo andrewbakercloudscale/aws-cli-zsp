@@ -1,6 +1,6 @@
 # Handover: aws-cli-zsp
 
-Updated 2026-11-01. Version 0.3.7 is on `main` and has no tag. v0.3.2 is the latest release.
+Updated 2026-11-02. Version 0.3.8 is on `main` and has no tag. v0.3.2 is the latest release.
 
 ## State
 
